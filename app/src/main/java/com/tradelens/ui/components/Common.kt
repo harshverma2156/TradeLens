@@ -46,6 +46,14 @@ object Fmt {
         else -> v.toString()
     }
     fun ticker(symbol: String) = symbol.removeSuffix(".NS").removeSuffix(".BO")
+
+    private val ist = java.util.TimeZone.getTimeZone("Asia/Kolkata")
+    /** Exchange time in IST, e.g. "09 Nov, 15:28". */
+    fun date(epochMillis: Long): String =
+        java.text.SimpleDateFormat("dd MMM yyyy", Locale.US).apply { timeZone = ist }.format(java.util.Date(epochMillis))
+
+    fun dateTime(epochMillis: Long): String =
+        java.text.SimpleDateFormat("dd MMM, HH:mm", Locale.US).apply { timeZone = ist }.format(java.util.Date(epochMillis))
 }
 
 /** ViewModel with constructor args, without a DI framework. */

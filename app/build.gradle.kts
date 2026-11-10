@@ -6,6 +6,11 @@ plugins {
     id("com.google.devtools.ksp")
 }
 
+ksp {
+    // Room schema history, needed to write and test migrations safely.
+    arg("room.schemaLocation", "$projectDir/schemas")
+}
+
 android {
     namespace = "com.tradelens"
     compileSdk = 34
@@ -16,6 +21,10 @@ android {
         targetSdk = 34
         versionCode = 1
         versionName = "1.0"
+        // Base URL of your own market-data server (not a secret). Empty = use the built-in Yahoo source.
+        // Set with: ./gradlew assembleDebug -Ptradelens.backendUrl=https://api.example.com/
+        val backendUrl = (project.findProperty("tradelens.backendUrl") as String?).orEmpty()
+        buildConfigField("String", "BACKEND_URL", "\"$backendUrl\"")
     }
 
     buildTypes {
@@ -29,7 +38,13 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = "17" }
-    buildFeatures { compose = true }
+    buildFeatures {
+        compose = true
+        buildConfig = true
+    }
+    testOptions { unitTests.isIncludeAndroidResources = true }
+    // Exported Room schemas, read by MigrationTestHelper in (Robolectric) unit tests. Debug builds only.
+    sourceSets.getByName("debug").assets.srcDir("$projectDir/schemas")
 }
 
 dependencies {
@@ -65,4 +80,9 @@ dependencies {
     implementation("androidx.work:work-runtime-ktx:2.9.1")
 
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.1")
+    testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
+    testImplementation("org.robolectric:robolectric:4.13")
+    testImplementation("androidx.test:core:1.6.1")
+    testImplementation("androidx.room:room-testing:2.6.1")
 }

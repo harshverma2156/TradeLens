@@ -23,38 +23,61 @@ reward-to-risk, position size and holding period.
 | Settings | Capital and risk % per trade, used for position sizing |
 
 ## How the analysis works (`analysis/AnalysisEngine.kt`)
-Uses one year of daily candles. Nine factors each add or subtract points; the total (−100 to +100)
-maps to Strong buy (≥40), Buy (≥15), Wait, Sell (≤−15), Strong sell (≤−40).
+Uses two years of daily candles plus NIFTY 50 as a benchmark. It runs on the device and needs no AI model or paid API.
 
-1. Trend: price vs 20 and 50 EMA (±15)
-2. Long-term trend: price vs 200 EMA (±10)
-3. RSI 14: momentum, overbought >75, oversold <30
-4. MACD 12/26/9: position vs signal, fresh crossovers score higher (±10/15)
-5. ADX 14: trend strength and direction (+DI vs −DI)
-6. Bollinger Bands 20/2: stretch and squeeze
-7. Volume vs 20-day average on up/down days (±10)
-8. Price structure: 20-day breakout/breakdown, near support or resistance (±8)
-9. Position in the 52-week range (±5)
+**Rating.** Factors are grouped into six pillars. Each pillar scores −100 to +100 and the weighted average is the overall score:
 
-Trade plan (long; short is mirrored):
-- Buy zone: from max(price − 0.75×ATR, nearest support) up to current price; entry is its midpoint
-- Stop-loss: below support by 0.5×ATR, at least 1.5×ATR and at most 3×ATR from entry
-- Targets: 1.5R, 2.5R and 4R, where R is entry minus stop-loss
-- Quantity: (capital × risk%) ÷ R, capped at what your capital can buy, so a stop-loss hit costs your chosen risk
-- Support/resistance: swing highs/lows from the last 6 months, clustered within 1.5%
-- Prices round to the NSE tick size of ₹0.05
+| Pillar | Weight | Factors |
+|---|---|---|
+| Trend | 30% | 20/50 EMA stack, 200 EMA level and slope, weekly trend (10/30-week EMA), Supertrend (10,3), ADX/DI |
+| Momentum | 20% | RSI 14 regime, MACD 12/26/9 (position, zero line, fresh cross), 3- and 6-month return |
+| Relative strength | 15% | 3- and 6-month return vs NIFTY 50, RS line vs its 100-day average |
+| Volume & money flow | 15% | OBV trend and divergence, MFI 14, 20-day up/down volume ratio, today's volume surge |
+| Price location | 10% | 20-day breakout or breakdown, near support or resistance, 52-week position, stretch from 20 EMA in ATRs, Bollinger Bands |
+| Market backdrop | 10% | NIFTY vs its 50/200 EMA, NIFTY one-month return |
 
-All thresholds are plain constants in that file; tune them and backtest before relying on them.
+If a pillar is missing (no benchmark, or an index with no volume), the remaining weights are re-normalised. Score bands are Strong buy ≥45, Buy ≥20, Hold, Sell ≤−20 and Strong sell ≤−45. Then these guardrails apply:
+- A Buy inside a weekly downtrend becomes Hold.
+- A Strong buy that is more than 3 ATR above the 20 EMA becomes Buy.
+- A Strong buy in a weak market becomes Buy.
+- A Strong sell in a weekly uptrend becomes Sell.
+
+**Best entry.** The engine gathers candidate levels within 2.5 ATR of the price:
+- 20, 50 and 200 EMA
+- Supertrend line
+- swing support (weighted by how often it was touched)
+- volume-profile POC (the most-traded price) and value-area edge
+- Fibonacci 38.2%, 50% and 61.8% of the last swing
+- VWAP anchored at the swing low
+- the breakout retest level
+
+Levels within 0.6 ATR of each other are clustered. The cluster with the most weight, discounted by distance, becomes the entry zone; strong trends are discounted harder, so they favour shallow pullbacks. The result is one of these: Buy now (price is in the zone), Wait for a pullback (place a limit order at the zone), Buy the breakout (fresh breakout on heavy volume), Wait for confirmation (Hold, with a trigger price) or Avoid (Sell).
+
+**Trade plan** (long; short is mirrored):
+- Stop-loss: 0.5 ATR below the zone, between 1.5 and 3 ATR from entry.
+- Targets: 1.5R, 2.5R and 4R, where R is entry minus stop-loss.
+- Quantity: (capital × risk%) ÷ R, capped at what your capital can buy.
+- Prices round to the NSE tick size of ₹0.05.
+
+**Backtest and confidence.** The same rules are replayed over about 340 past trading days of the stock, with no look-ahead. Each Buy is entered at the next day's open, with a 1.5 ATR stop, a 3 ATR target and a 30-day limit. The app shows the win rate against a random-entry baseline that uses the same exits on every day, plus profit factor and return vs buy-and-hold.
+
+Confidence (0–100) combines:
+- how many pillars agree
+- how strong the score is
+- whether past signals on this stock beat the baseline and made money
+
+All thresholds are plain constants in that file. The backtest is in-sample and has no costs; treat it as a sanity check, not a promise.
 
 ## Project layout
 ```
-data/remote      Yahoo Finance API (Retrofit + kotlinx.serialization)
+data/remote      MarketDataProvider interface; YahooFinanceProvider (Retrofit + kotlinx.serialization)
 data/local       Room DB: watchlist, paper holdings, trades, alerts
 data/repository  MarketRepository, UserRepository, SettingsRepository
 analysis         Indicators (EMA, RSI, MACD, ATR, Bollinger, ADX, S/R) and AnalysisEngine
 work             AlertWorker + scheduler
 ui               Compose theme, chart, screens and ViewModels
 ```
+Engineering docs (audit, target architecture, data models, roadmap) are in [docs/](docs/README.md).
 
 ## Important limitations
 - Data source: the free Yahoo Finance endpoints are unofficial, may be delayed, and can rate-limit
@@ -68,6 +91,6 @@ ui               Compose theme, chart, screens and ViewModels
   trading has its own SEBI framework through brokers. Check the current rules before releasing publicly.
 
 ## Next steps worth adding
-Backtesting the rules on historical data; fundamentals (P/E, ROE, debt) from a data provider;
-news and results calendar; multi-timeframe confirmation (weekly trend); unit tests for `Ta` and
+Out-of-sample backtesting across the whole universe; fundamentals (P/E, ROE, debt) from a data provider;
+news and results calendar; unit tests for `Ta` and
 `AnalysisEngine`; Hilt for DI; a proper adaptive launcher icon.

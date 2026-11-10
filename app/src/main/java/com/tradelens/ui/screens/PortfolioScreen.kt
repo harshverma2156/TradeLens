@@ -29,6 +29,7 @@ import java.util.Locale
 class PortfolioViewModel(user: UserRepository, private val market: MarketRepository) : ViewModel() {
     val holdings: StateFlow<List<HoldingEntity>?> = user.holdings.stateIn(viewModelScope, SharingStarted.Eagerly, null)
     val trades: StateFlow<List<TradeEntity>> = user.trades.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+    val realized: StateFlow<Double> = user.realizedPnl.stateIn(viewModelScope, SharingStarted.Eagerly, 0.0)
     private val _prices = MutableStateFlow<Map<String, Double>>(emptyMap())
     val prices = _prices.asStateFlow()
 
@@ -54,6 +55,7 @@ fun PortfolioScreen(container: AppContainer, onOpenStock: (String) -> Unit) {
     val holdings by vm.holdings.collectAsStateWithLifecycle()
     val trades by vm.trades.collectAsStateWithLifecycle()
     val prices by vm.prices.collectAsStateWithLifecycle()
+    val realized by vm.realized.collectAsStateWithLifecycle()
     val dateFmt = remember { SimpleDateFormat("dd MMM, HH:mm", Locale.getDefault()) }
 
     Scaffold(
@@ -77,8 +79,7 @@ fun PortfolioScreen(container: AppContainer, onOpenStock: (String) -> Unit) {
                     KeyValue("Invested", Fmt.price(invested))
                     KeyValue("Current value", Fmt.price(current), emphasize = true)
                     KeyValue("Unrealised P&L", "${Fmt.signed(pnl)}  (${Fmt.pct(if (invested > 0) pnl / invested * 100 else 0.0)})", changeColor(pnl), emphasize = true)
-                    val realized = trades.sumOf { it.realizedPnl ?: 0.0 }
-                    KeyValue("Realised P&L (recent trades)", Fmt.signed(realized), changeColor(realized))
+                    KeyValue("Realised P&L", Fmt.signed(realized), changeColor(realized))
                     Spacer(Modifier.height(6.dp))
                     Text("Practice with virtual money: use Buy and Sell on any stock page to test the suggested trade plans.",
                         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)

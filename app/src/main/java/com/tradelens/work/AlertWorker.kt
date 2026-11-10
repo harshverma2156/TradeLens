@@ -24,15 +24,19 @@ class AlertWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
 
     override suspend fun doWork(): Result {
         val container = (applicationContext as TradeLensApp).container
+        if (container.settings.settings.value.demoMode) return Result.success()   // never alert on synthetic prices
         val alerts = container.user.activeAlerts()
+        // One batched, cache-bypassing request for every alert symbol; offline fallbacks are ignored.
+        val quotes = try {
+            container.market.quotes(alerts.map { it.symbol }.distinct(), forceRefresh = true)
+                .filter { it.status?.error == null }.associateBy { it.symbol }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            return Result.retry()
+        }
         for (alert in alerts) {
-            val quote = try {
-                container.market.quote(alert.symbol)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                continue
-            }
+            val quote = quotes[alert.symbol] ?: continue
             val hit = if (alert.above) quote.price >= alert.targetPrice else quote.price <= alert.targetPrice
             if (hit) {
                 notify(alert, quote.price)
@@ -55,7 +59,7 @@ class AlertWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
         val direction = if (alert.above) "rose above" else "fell below"
         val notification = NotificationCompat.Builder(ctx, TradeLensApp.ALERT_CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_stat_alert)
-            .setContentTitle("${alert.symbol.removeSuffix(".NS")} $direction ${Fmt.price(alert.targetPrice)}")
+            .setContentTitle("${Fmt.ticker(alert.symbol)} $direction ${Fmt.price(alert.targetPrice)}")
             .setContentText("Now trading at ${Fmt.price(price)}")
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setContentIntent(intent)

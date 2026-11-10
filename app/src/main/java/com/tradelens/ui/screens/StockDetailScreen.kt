@@ -13,6 +13,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ShowChart
 import androidx.compose.material.icons.filled.AddAlert
 import androidx.compose.material.icons.filled.BarChart
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material3.*
@@ -31,6 +32,11 @@ import com.tradelens.AppContainer
 import com.tradelens.analysis.*
 import com.tradelens.data.model.Candle
 import com.tradelens.data.model.ChartRange
+import com.tradelens.marketdata.CorporateAction
+import com.tradelens.marketdata.CorporateActionType
+import com.tradelens.marketdata.DataStatus
+import com.tradelens.marketdata.Resampler
+import com.tradelens.marketdata.Timeframe
 import com.tradelens.data.model.Quote
 import com.tradelens.data.repository.*
 import com.tradelens.ui.components.*
@@ -60,9 +66,15 @@ class StockDetailViewModel(
         val benchmark: List<Candle>? = null,        // NIFTY 50, for relative strength and market backdrop
         val analyzing: Boolean = false,
         val analysis: Analysis? = null,
+        val dataStatus: DataStatus? = null,         // status of the daily series behind the analysis
+        val actions: List<CorporateAction> = emptyList(),
         val range: ChartRange = ChartRange.M6,
+        val interval: Timeframe = ChartRange.M6.default,
         val chartCandles: List<Candle> = emptyList(),
+        val chartStatus: DataStatus? = null,
+        val chartError: String? = null,
         val chartLoading: Boolean = false,
+        val refreshing: Boolean = false,
         val candleMode: Boolean = true,
         val showLevels: Boolean = true,
         val message: String? = null,
@@ -79,17 +91,25 @@ class StockDetailViewModel(
         viewModelScope.launch { settings.settings.drop(1).collect { reanalyze() } }
     }
 
-    fun load() {
+    val source get() = market.source
+
+    /** [force] = pull-to-refresh / Retry: bypass the cache and go to the provider. */
+    fun load(force: Boolean = false) {
         viewModelScope.launch {
-            _state.update { it.copy(loading = true, error = null) }
+            _state.update { if (it.quote == null) it.copy(loading = true, error = null) else it.copy(refreshing = true) }
             val bench = async { market.benchmark() }
-            runCatchingCancellable { market.analysisHistory(symbol) }
+            runCatchingCancellable { market.analysisHistory(symbol, force) }
                 .onSuccess { data ->
-                    _state.update { it.copy(loading = false, quote = data.quote, daily = data.candles, benchmark = bench.await()) }
+                    val actions = runCatchingCancellable { market.candles(symbol, Timeframe.D1, System.currentTimeMillis() - MarketRepository.ANALYSIS_LOOKBACK_MS).actions }.getOrDefault(emptyList())
+                    _state.update {
+                        it.copy(loading = false, refreshing = false, error = null, quote = data.quote, daily = data.candles,
+                            dataStatus = data.status, actions = actions, benchmark = bench.await())
+                    }
                     reanalyze()
-                    setRange(_state.value.range)
+                    loadChart(force)
                 }
-                .onFailure { e -> _state.update { it.copy(loading = false, error = e.friendlyMessage()) } }
+                .onFailure { e -> _state.update { it.copy(loading = false, refreshing = false, error = if (it.quote == null) e.friendlyMessage() else null,
+                    message = if (it.quote != null) e.friendlyMessage() else null) } }
         }
     }
 
@@ -111,25 +131,34 @@ class StockDetailViewModel(
     }
 
     fun setRange(range: ChartRange) {
-        val daily = _state.value.daily
-        // 1M / 6M / 1Y are sliced from the daily data we already have; others need a fetch.
-        val sliced = when (range) {
-            ChartRange.M1 -> daily.takeLast(22)
-            ChartRange.M6 -> daily.takeLast(126)
-            ChartRange.Y1 -> daily.takeLast(252)
-            else -> null
-        }
-        if (sliced != null) {
-            _state.update { it.copy(range = range, chartCandles = sliced, chartLoading = false) }
-            return
-        }
-        _state.update { it.copy(range = range, chartLoading = true) }
-        viewModelScope.launch {
-            runCatchingCancellable { market.history(symbol, range) }
-                .onSuccess { d -> _state.update { if (it.range == range) it.copy(chartCandles = d.candles, chartLoading = false) else it } }
-                .onFailure { e -> _state.update { it.copy(chartLoading = false, message = e.friendlyMessage()) } }
+        val cur = _state.value.interval
+        _state.update { it.copy(range = range, interval = if (cur in range.intervals && isAvailable(cur)) cur else range.default) }
+        loadChart()
+    }
+
+    fun setInterval(tf: Timeframe) {
+        _state.update { it.copy(interval = tf) }
+        loadChart()
+    }
+
+    /** Whether the current provider can serve [tf], natively or by building it from smaller bars. */
+    fun isAvailable(tf: Timeframe) = Resampler.sourceFor(tf, market.source.capabilities.timeframes.keys) != null
+
+    private var chartJob: Job? = null
+
+    private fun loadChart(force: Boolean = false) {
+        val range = _state.value.range
+        val tf = _state.value.interval
+        chartJob?.cancel()
+        _state.update { it.copy(chartLoading = true, chartError = null) }
+        chartJob = viewModelScope.launch {
+            runCatchingCancellable { market.chart(symbol, range, tf, force) }
+                .onSuccess { r -> _state.update { it.copy(chartCandles = r.candles, chartStatus = r.status, chartLoading = false) } }
+                .onFailure { e -> _state.update { it.copy(chartLoading = false, chartCandles = emptyList(), chartStatus = null, chartError = e.friendlyMessage()) } }
         }
     }
+
+    fun retryChart() = loadChart(force = true)
 
     fun toggleCandles() = _state.update { it.copy(candleMode = !it.candleMode) }
     fun toggleLevels() = _state.update { it.copy(showLevels = !it.showLevels) }
@@ -184,6 +213,9 @@ fun StockDetailScreen(container: AppContainer, symbol: String, onBack: () -> Uni
                 navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
                 title = { Text(Fmt.ticker(symbol), fontWeight = FontWeight.SemiBold) },
                 actions = {
+                    IconButton(onClick = { vm.load(force = true) }, enabled = !state.refreshing) {
+                        Icon(androidx.compose.material.icons.Icons.Filled.Refresh, "Refresh data")
+                    }
                     IconButton(onClick = { showAlertDialog = true }, enabled = state.quote != null) {
                         Icon(Icons.Filled.AddAlert, "Set price alert")
                     }
@@ -219,7 +251,7 @@ fun StockDetailScreen(container: AppContainer, symbol: String, onBack: () -> Uni
             state.loading -> Loading(Modifier.padding(padding))
             state.error != null || q == null -> CenterMessage(state.error ?: "No data.", Modifier.padding(padding), "Try again", vm::load)
             else -> LazyColumn(Modifier.padding(padding), contentPadding = PaddingValues(bottom = 24.dp)) {
-                item { PriceHeader(q) }
+                item { PriceHeader(q, onRetry = { vm.load(force = true) }) }
                 item { ChartSection(state, vm) }
                 item { KeyStats(q, state.analysis) }
                 val a = state.analysis
@@ -246,6 +278,15 @@ fun StockDetailScreen(container: AppContainer, symbol: String, onBack: () -> Uni
                     item { FactorsSection(a) }
                     item { LevelsSection(a, q) }
                     if (a.warnings.isNotEmpty()) item { WarningsSection(a.warnings) }
+                }
+                item {
+                    DataDetailsSection(vm.source, state.dataStatus, state.actions.takeLast(6).reversed().map { a ->
+                        val d = Fmt.date(a.exDate)
+                        when (a.type) {
+                            CorporateActionType.DIVIDEND -> "Dividend ${a.amount?.let { Fmt.price(it, q.currency) } ?: ""} · ex-date $d"
+                            else -> "${a.type.name.lowercase().replaceFirstChar { it.uppercase() }} ${a.ratio?.let { r -> if (r >= 1) "${Fmt.num(r, 0)}:1" else "1:${Fmt.num(1 / r, 0)}" } ?: ""} · ex-date $d"
+                        }
+                    })
                 }
                 item {
                     Text(
@@ -283,11 +324,13 @@ fun StockDetailScreen(container: AppContainer, symbol: String, onBack: () -> Uni
 }
 
 @Composable
-private fun PriceHeader(q: Quote) {
+private fun PriceHeader(q: Quote, onRetry: () -> Unit) {
     Column(Modifier.padding(horizontal = 20.dp, vertical = 4.dp)) {
         Text(q.name, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Text(Fmt.price(q.price, q.currency, q.isIndex), style = MaterialTheme.typography.displaySmall.merge(Num), fontWeight = FontWeight.SemiBold)
         ChangeText(q.change, q.changePct, style = MaterialTheme.typography.titleMedium)
+        // Always say how fresh the price is and where it came from; stale or demo data is never shown as live.
+        DataStatusBar(q.status, Modifier.padding(top = 4.dp), onRetry = onRetry)
     }
 }
 
@@ -315,13 +358,31 @@ private fun ChartSection(state: StockDetailViewModel.State, vm: StockDetailViewM
         },
     ) {
         Box {
-            PriceChart(state.chartCandles, state.candleMode, state.range.intraday, levels)
+            val err = state.chartError
+            if (err != null && state.chartCandles.isEmpty()) {
+                CenterMessage(err, Modifier.height(260.dp), "Retry", vm::retryChart)
+            } else {
+                PriceChart(state.chartCandles, state.candleMode, state.interval.intraday, levels)
+            }
             if (state.chartLoading) LinearProgressIndicator(Modifier.fillMaxWidth())
+        }
+        DataStatusBar(state.chartStatus, Modifier.padding(top = 6.dp), onRetry = vm::retryChart)
+        state.chartStatus?.availability?.filter { it.contains("bars") }?.forEach {
+            Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         Spacer(Modifier.height(10.dp))
         Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             ChartRange.entries.forEach { r ->
                 FilterChip(selected = state.range == r, onClick = { vm.setRange(r) }, label = { Text(r.label) })
+            }
+        }
+        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(top = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("Interval", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            state.range.intervals.forEach { tf ->
+                val ok = vm.isAvailable(tf)
+                FilterChip(selected = state.interval == tf, enabled = ok, onClick = { vm.setInterval(tf) },
+                    label = { Text(if (ok) tf.label else "${tf.label} n/a") })
             }
         }
     }

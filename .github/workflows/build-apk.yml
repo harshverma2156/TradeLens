@@ -17,12 +17,20 @@ jobs:
 
       - uses: android-actions/setup-android@v3
 
+      # Uses the project's Gradle wrapper, so CI runs the same Gradle version as local builds.
       - uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: "8.7"
+
+      - name: Unit tests
+        run: chmod +x gradlew && ./gradlew testDebugUnitTest --stacktrace
 
       - name: Build debug APK
-        run: gradle assembleDebug --stacktrace
+        run: ./gradlew assembleDebug --stacktrace
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-reports
+          path: app/build/reports/tests/
 
       - uses: actions/upload-artifact@v4
         with:

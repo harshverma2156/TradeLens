@@ -64,6 +64,9 @@ interface TradeLensDao {
     @Insert
     suspend fun insertTrade(trade: TradeEntity)
 
+    @Query("SELECT COALESCE(SUM(realizedPnl), 0) FROM trades")
+    fun realizedPnl(): Flow<Double>
+
     @Query("SELECT * FROM trades ORDER BY time DESC LIMIT 100")
     fun trades(): Flow<List<TradeEntity>>
 
@@ -84,10 +87,14 @@ interface TradeLensDao {
 }
 
 @Database(
-    entities = [WatchlistEntity::class, HoldingEntity::class, TradeEntity::class, AlertEntity::class],
-    version = 1,
-    exportSchema = false,
+    entities = [
+        WatchlistEntity::class, HoldingEntity::class, TradeEntity::class, AlertEntity::class,
+        CandleEntity::class, SyncStateEntity::class, QuoteEntity::class, CorporateActionEntity::class, HolidayEntity::class,
+    ],
+    version = 2,
+    exportSchema = true,
 )
 abstract class AppDatabase : RoomDatabase() {
     abstract fun dao(): TradeLensDao
+    abstract fun marketDao(): MarketDao
 }

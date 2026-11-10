@@ -3,6 +3,9 @@ package com.tradelens.ui.navigation
 import android.net.Uri
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.tradelens.ui.components.DemoBanner
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ShowChart
 import androidx.compose.material.icons.filled.AccountBalanceWallet
@@ -41,8 +44,10 @@ fun TradeLensNavHost(container: AppContainer) {
     val route = entry?.destination?.route
     val openStock: (String) -> Unit = { nav.navigate("stock/${Uri.encode(it)}") }
 
+    val settings by container.settings.settings.collectAsStateWithLifecycle()
     Scaffold(
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
+        topBar = { if (settings.demoMode) DemoBanner(Modifier.statusBarsPadding()) },
         bottomBar = {
             if (tabs.any { it.route == route }) {
                 NavigationBar {

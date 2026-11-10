@@ -8,7 +8,8 @@ class UserRepository(private val db: AppDatabase) {
 
     val watchlist = dao.watchlist()
     val holdings = dao.holdings()
-    val trades = dao.trades()
+    val trades = dao.trades()          // latest 100, for display
+    val realizedPnl = dao.realizedPnl() // all-time total
     val alerts = dao.alerts()
 
     fun isWatched(symbol: String) = dao.isWatched(symbol)

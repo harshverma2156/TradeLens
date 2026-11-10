@@ -15,6 +15,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.tradelens.AppContainer
 import com.tradelens.ui.components.Fmt
+import com.tradelens.ui.components.KeyValue
 import com.tradelens.ui.components.Section
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -24,6 +25,7 @@ fun SettingsScreen(container: AppContainer, onBack: () -> Unit) {
     var capital by remember { mutableStateOf(current.capital.toLong().toString()) }
     var risk by remember { mutableStateOf(current.riskPercent.toString()) }
     var indiaOnly by remember { mutableStateOf(current.indiaOnlySearch) }
+    var demo by remember { mutableStateOf(current.demoMode) }
     val capitalV = capital.toDoubleOrNull()
     val riskV = risk.toDoubleOrNull()
     val valid = capitalV != null && capitalV > 0 && riskV != null && riskV > 0 && riskV <= 10
@@ -74,9 +76,28 @@ fun SettingsScreen(container: AppContainer, onBack: () -> Unit) {
                     Switch(checked = indiaOnly, onCheckedChange = { indiaOnly = it; saved = false })
                 }
             }
+            Section("Market data") {
+                val info = container.market.source
+                KeyValue("Provider", info.name)
+                KeyValue("Quotes", if (info.realtime) "Real-time" else info.mode.name.lowercase().replace('_', ' ').replaceFirstChar { it.uppercase() })
+                val tfs = com.tradelens.marketdata.Timeframe.entries.filter { info.supports(it) }.joinToString(" ") { it.label }
+                KeyValue("Intervals", tfs.ifBlank { "none" })
+                KeyValue("Corporate actions", if (info.capabilities.corporateActions) "Yes" else "No")
+                KeyValue("Licensed for redistribution", if (info.licensedForDisplay) "Yes" else "No")
+                Text(info.note, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Demo data mode")
+                        Text("Synthetic prices for offline demos. Clearly marked DEMO; alerts are paused.",
+                            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    Switch(checked = demo, onCheckedChange = { demo = it; saved = false })
+                }
+            }
             Button(
                 onClick = {
-                    container.settings.update(current.copy(capital = capitalV!!, riskPercent = riskV!!, indiaOnlySearch = indiaOnly))
+                    container.settings.update(current.copy(capital = capitalV!!, riskPercent = riskV!!, indiaOnlySearch = indiaOnly, demoMode = demo))
                     saved = true
                 },
                 enabled = valid,

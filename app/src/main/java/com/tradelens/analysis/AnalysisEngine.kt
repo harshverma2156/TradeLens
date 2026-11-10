@@ -609,7 +609,7 @@ object AnalysisEngine {
         fun cand(name: String, p: Double?, w: Double) {
             if (p == null || p <= 0) return
             val d = s * (price - p)               // distance "behind" price, in the direction of a pullback
-            if (d >= -0.25 * atr && d <= 3 * atr) cands += Cand(name, p, w)
+            if (d >= -0.25 * atr && d <= 2.5 * atr) cands += Cand(name, p, w)
         }
         cand("20 EMA", ctx.ema20[i], 2.0)
         cand("50 EMA", ctx.ema50[i], 2.5)
@@ -642,8 +642,11 @@ object AnalysisEngine {
             if (g != null && abs(g.first().price - cd.price) <= 0.6 * atr) g += cd else clusters += mutableListOf(cd)
         }
         fun mean(g: List<Cand>) = g.sumOf { it.price * it.weight } / g.sumOf { it.weight }
-        fun strength(g: List<Cand>) = g.sumOf { it.weight } * (1 - 0.12 * max(0.0, s * (price - mean(g))) / atr)
-        val best = clusters.maxByOrNull { strength(it) }?.takeIf { strength(it) >= 2.0 }
+        // Strong trends rarely retrace far, so distance is penalised harder when the trend is strong.
+        val trendScore = r.pillars.firstOrNull { it.pillar == Pillar.TREND }?.score ?: 0
+        val decay = if (r.signal == Signal.STRONG_BUY || (long && trendScore >= 60)) 0.40 else 0.28
+        fun strength(g: List<Cand>) = g.sumOf { it.weight } * max(0.15, 1 - decay * max(0.0, s * (price - mean(g))) / atr)
+        val best = clusters.filter { g -> g.sumOf { it.weight } >= 2.0 }.maxByOrNull { strength(it) }
 
         val volSurge = ctx.hasVolume && run {
             val avg = (i - 20 until i).map { c[it].volume.toDouble() }.average()
@@ -828,8 +831,17 @@ object AnalysisEngine {
         val agree = if (dir == 0.0 || totalW == 0.0) 0.0
         else r.pillars.filter { sign(it.score.toDouble()) == dir && abs(it.score) >= 10 }.sumOf { it.pillar.weight } / totalW
         val strength = min(abs(r.score) / 60.0, 1.0)
-        val history = if (bt != null && bt.trades >= 5) (0.5 + (bt.winRate - bt.baseWinRate) * 2.5).coerceIn(0.0, 1.0) else 0.5
-        return (100 * (0.40 * agree + 0.35 * strength + 0.25 * history)).roundToInt().coerceIn(0, 100)
+        var history = 0.5
+        if (bt != null && bt.trades >= 5) {
+            history = (0.5 + (bt.winRate - bt.baseWinRate) * 2.5).coerceIn(0.0, 1.0)
+            // A better hit rate means little if the signals still lost money overall.
+            if (bt.avgReturnPct < 0 || (bt.profitFactor ?: 1.0) < 1.0) history = min(history, 0.25)
+            else if ((bt.profitFactor ?: 1.0) >= 1.5) history = max(history, 0.7)
+        }
+        var conf = 100 * (0.40 * agree + 0.35 * strength + 0.25 * history)
+        if (r.extension > 3) conf -= 10           // chasing an extended move is lower-odds
+        if (bt != null && bt.trades >= 5 && bt.avgReturnPct < 0) conf = min(conf, 75.0)
+        return conf.roundToInt().coerceIn(0, 100)
     }
 
     private fun summary(r: Scored, e: EntryAdvice, confidence: Int): String {

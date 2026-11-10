@@ -6,11 +6,22 @@ import android.app.NotificationManager
 import android.content.Context
 import androidx.room.Room
 import com.tradelens.data.local.AppDatabase
+import com.tradelens.data.local.MIGRATION_1_2
+import com.tradelens.data.remote.BackendApi
+import com.tradelens.data.remote.BackendMarketDataProvider
+import com.tradelens.data.remote.DemoMarketDataProvider
+import com.tradelens.data.remote.MarketDataProvider
 import com.tradelens.data.remote.YahooApi
+import com.tradelens.data.remote.YahooFinanceProvider
 import com.tradelens.data.repository.MarketRepository
 import com.tradelens.data.repository.SettingsRepository
 import com.tradelens.data.repository.UserRepository
 import com.tradelens.work.AlertScheduler
+import com.tradelens.work.MarketSyncScheduler
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -28,6 +39,7 @@ class TradeLensApp : Application() {
         val channel = NotificationChannel(ALERT_CHANNEL_ID, "Price alerts", NotificationManager.IMPORTANCE_HIGH)
         getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
         AlertScheduler.schedulePeriodic(this)
+        MarketSyncScheduler.schedulePeriodic(this)
     }
 
     companion object {
@@ -55,18 +67,40 @@ class AppContainer(context: Context) {
         .readTimeout(20, TimeUnit.SECONDS)
         .build()
 
-    private val api: YahooApi = Retrofit.Builder()
-        .baseUrl("https://query1.finance.yahoo.com/")
+    private fun retrofit(baseUrl: String) = Retrofit.Builder()
+        .baseUrl(baseUrl)
         .client(http)
         .addConverterFactory(json.asConverterFactory("application/json".toMediaType()))
         .build()
-        .create(YahooApi::class.java)
 
     private val db = Room.databaseBuilder(context, AppDatabase::class.java, "tradelens.db")
-        .fallbackToDestructiveMigration()
+        .addMigrations(MIGRATION_1_2)
+        // Never silently wipe watchlist/portfolio/alerts on upgrade: every version bump needs a Migration.
+        .fallbackToDestructiveMigrationOnDowngrade()
         .build()
 
-    val market = MarketRepository(api)
-    val user = UserRepository(db)
     val settings = SettingsRepository(context)
+    val user = UserRepository(db)
+
+    private val yahoo = YahooFinanceProvider(retrofit("https://query1.finance.yahoo.com/").create(YahooApi::class.java))
+    private val demo = DemoMarketDataProvider()
+
+    /**
+     * Your own server, configured with -Ptradelens.backendUrl=https://… at build time (not a secret).
+     * When set, it replaces Yahoo; the server holds the licensed-provider credentials.
+     */
+    private val backend: BackendMarketDataProvider? = BuildConfig.BACKEND_URL.takeIf { it.isNotBlank() }?.let { url ->
+        BackendMarketDataProvider(retrofit(url.trimEnd('/') + "/").create(BackendApi::class.java)).also { p ->
+            CoroutineScope(SupervisorJob() + Dispatchers.IO).launch { runCatching { p.refreshInfo() } }
+        }
+    }
+
+    /** Demo mode wins (always labelled); then the backend if configured; otherwise Yahoo. */
+    private fun currentProvider(): MarketDataProvider = when {
+        settings.settings.value.demoMode -> demo
+        backend != null -> backend
+        else -> yahoo
+    }
+
+    val market = MarketRepository(::currentProvider, db.marketDao())
 }

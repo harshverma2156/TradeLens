@@ -36,6 +36,7 @@ class MarketsViewModel(private val market: MarketRepository) : ViewModel() {
     data class State(
         val loading: Boolean = true,
         val indices: List<Quote> = emptyList(),
+        val sectors: List<Quote> = emptyList(),
         val stocks: List<Quote> = emptyList(),
         val sort: Sort = Sort.POPULAR,
         val error: String? = null,
@@ -55,11 +56,13 @@ class MarketsViewModel(private val market: MarketRepository) : ViewModel() {
     fun refresh() {
         viewModelScope.launch {
             _state.update { it.copy(loading = true, error = null) }
+            // Three batched requests (provider batch size permitting) instead of one call per symbol.
             val indices = market.quotes(Universe.INDICES.keys)
+            val sectors = market.quotes(Universe.SECTORS.keys - Universe.INDICES.keys)
             val stocks = market.quotes(Universe.POPULAR)
             _state.update {
                 it.copy(
-                    loading = false, indices = indices, stocks = stocks,
+                    loading = false, indices = indices, sectors = sectors, stocks = stocks,
                     error = if (indices.isEmpty() && stocks.isEmpty()) "Couldn't load prices. Check your connection and tap refresh." else null,
                 )
             }
@@ -94,8 +97,20 @@ fun MarketsScreen(container: AppContainer, onOpenStock: (String) -> Unit, onSear
             state.error != null -> CenterMessage(state.error!!, Modifier.padding(padding), "Try again", vm::refresh)
             else -> LazyColumn(Modifier.padding(padding), contentPadding = PaddingValues(bottom = 16.dp)) {
                 item {
+                    DataStatusBar((state.indices + state.stocks).firstOrNull()?.status, Modifier.padding(start = 16.dp, end = 16.dp, bottom = 8.dp), onRetry = vm::refresh)
+                }
+                item {
                     LazyRow(contentPadding = PaddingValues(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                         items(state.indices, key = { it.symbol }) { q -> IndexCard(q) { onOpenStock(q.symbol) } }
+                    }
+                }
+                if (state.sectors.isNotEmpty()) {
+                    item {
+                        Text("Sectors", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.padding(start = 16.dp, top = 16.dp, bottom = 6.dp))
+                        LazyRow(contentPadding = PaddingValues(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            items(state.sectors.sortedByDescending { it.changePct }, key = { it.symbol }) { q -> SectorChip(q) { onOpenStock(q.symbol) } }
+                        }
                     }
                 }
                 item {
@@ -123,6 +138,20 @@ fun MarketsScreen(container: AppContainer, onOpenStock: (String) -> Unit, onSear
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun SectorChip(q: Quote, onClick: () -> Unit) {
+    Column(
+        Modifier
+            .clip(RoundedCornerShape(12.dp))
+            .background(MaterialTheme.colorScheme.surface)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 8.dp)
+    ) {
+        Text(q.name.removePrefix("NIFTY "), style = MaterialTheme.typography.labelMedium, maxLines = 1)
+        ChangeText(q.change, q.changePct, style = MaterialTheme.typography.labelSmall)
     }
 }
 
