@@ -1,0 +1,36 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Start emulator (Pixel 7 API 34)",
+      "type": "shell",
+      "command": "${env:LOCALAPPDATA}\\Android\\Sdk\\emulator\\emulator.exe",
+      "args": ["-avd", "TradeLens_Pixel_7_API_34"],
+      "isBackground": true,
+      "problemMatcher": [],
+      "presentation": { "reveal": "silent", "panel": "dedicated" }
+    },
+    {
+      "label": "Build debug APK",
+      "type": "shell",
+      "command": ".\\gradlew.bat assembleDebug",
+      "group": "build",
+      "problemMatcher": []
+    },
+    {
+      "label": "Install & run on emulator",
+      "type": "shell",
+      "command": ".\\gradlew.bat installDebug; if ($?) { & \"$env:LOCALAPPDATA\\Android\\Sdk\\platform-tools\\adb.exe\" shell am start -n com.tradelens/.MainActivity }",
+      "options": { "shell": { "executable": "powershell.exe", "args": ["-NoProfile", "-Command"] } },
+      "group": { "kind": "build", "isDefault": true },
+      "problemMatcher": []
+    },
+    {
+      "label": "Run unit tests",
+      "type": "shell",
+      "command": ".\\gradlew.bat testDebugUnitTest",
+      "group": "test",
+      "problemMatcher": []
+    }
+  ]
+}
