@@ -19,7 +19,7 @@ import retrofit2.http.Query
 /**
  * Client for the TradeLens backend (BFF). The backend holds every licensed-provider credential
  * (Kite Connect api_secret, Upstox client secret, exchange-vendor keys); the APK holds none.
- * Authentication is a short-lived user token supplied by [token]. See docs/06-market-data.md for the contract.
+ * Authentication is a short-lived user token supplied by [token]. See docs/05-market-data.md §7 for the contract.
  */
 interface BackendApi {
     @GET("v1/provider") suspend fun provider(): ProviderDto

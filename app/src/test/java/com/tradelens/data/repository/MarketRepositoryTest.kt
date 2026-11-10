@@ -167,7 +167,7 @@ class MarketRepositoryTest {
         val p = FakeProvider(history = days.filter { it.time < ist(2026, 11, 10) })   // Tuesday's bar missing
         val r = repo(p)
         assertEquals(Freshness.STALE, r.candles("ABC.NS", Timeframe.D1, from).status.freshness)
-        assertEquals(Freshness.STALE, r.quote("ABC.NS").status!!.freshness.let { if (it == Freshness.MARKET_CLOSED) Freshness.STALE else it }.let { Freshness.STALE })
+        assertEquals(Freshness.STALE, r.freshness(ist(2026, 11, 9, 15, 30), now, p.info))   // a quote from the same session agrees
     }
 
     @Test fun delayedIntradayWithinAllowanceIsDelayedNotStale() = runBlocking {
