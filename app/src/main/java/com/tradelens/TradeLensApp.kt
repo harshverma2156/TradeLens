@@ -103,4 +103,6 @@ class AppContainer(context: Context) {
     }
 
     val market = MarketRepository(::currentProvider, db.marketDao())
+    /** Memoised technical-indicator reports, shared by every screen. */
+    val technicalCache = com.tradelens.ta.TechnicalCache()
 }

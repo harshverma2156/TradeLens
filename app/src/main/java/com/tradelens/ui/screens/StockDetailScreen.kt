@@ -193,7 +193,7 @@ class StockDetailViewModel(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun StockDetailScreen(container: AppContainer, symbol: String, onBack: () -> Unit) {
+fun StockDetailScreen(container: AppContainer, symbol: String, onBack: () -> Unit, onOpenTechnical: (String) -> Unit = {}) {
     val vm = rememberVm(key = symbol) { StockDetailViewModel(symbol, container.market, container.user, container.settings) }
     val state by vm.state.collectAsStateWithLifecycle()
     val watched by vm.watched.collectAsStateWithLifecycle()
@@ -253,6 +253,11 @@ fun StockDetailScreen(container: AppContainer, symbol: String, onBack: () -> Uni
             else -> LazyColumn(Modifier.padding(padding), contentPadding = PaddingValues(bottom = 24.dp)) {
                 item { PriceHeader(q, onRetry = { vm.load(force = true) }) }
                 item { ChartSection(state, vm) }
+                item {
+                    FilledTonalButton(onClick = { onOpenTechnical(symbol) }, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
+                        Text("Advanced technical analysis: 30+ indicators, any timeframe")
+                    }
+                }
                 item { KeyStats(q, state.analysis) }
                 val a = state.analysis
                 if (a == null && state.analyzing) {

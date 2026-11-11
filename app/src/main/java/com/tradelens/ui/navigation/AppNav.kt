@@ -81,7 +81,10 @@ fun TradeLensNavHost(container: AppContainer) {
             composable("settings") { SettingsScreen(container, onBack = { nav.popBackStack() }) }
             composable("stock/{symbol}", arguments = listOf(navArgument("symbol") { type = NavType.StringType })) { e ->
                 val symbol = e.arguments?.getString("symbol").orEmpty()
-                StockDetailScreen(container, symbol, onBack = { nav.popBackStack() })
+                StockDetailScreen(container, symbol, onBack = { nav.popBackStack() }, onOpenTechnical = { nav.navigate("technical/${Uri.encode(it)}") })
+            }
+            composable("technical/{symbol}", arguments = listOf(navArgument("symbol") { type = NavType.StringType })) { e ->
+                TechnicalScreen(container, e.arguments?.getString("symbol").orEmpty(), onBack = { nav.popBackStack() })
             }
         }
     }
