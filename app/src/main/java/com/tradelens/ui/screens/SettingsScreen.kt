@@ -24,11 +24,13 @@ fun SettingsScreen(container: AppContainer, onBack: () -> Unit) {
     val current by container.settings.settings.collectAsStateWithLifecycle()
     var capital by remember { mutableStateOf(current.capital.toLong().toString()) }
     var risk by remember { mutableStateOf(current.riskPercent.toString()) }
+    var maxPos by remember { mutableStateOf(current.maxPositionPercent.toString()) }
     var indiaOnly by remember { mutableStateOf(current.indiaOnlySearch) }
     var demo by remember { mutableStateOf(current.demoMode) }
     val capitalV = capital.toDoubleOrNull()
     val riskV = risk.toDoubleOrNull()
-    val valid = capitalV != null && capitalV > 0 && riskV != null && riskV > 0 && riskV <= 10
+    val maxPosV = maxPos.toDoubleOrNull()
+    val valid = capitalV != null && capitalV > 0 && riskV != null && riskV > 0 && riskV <= 10 && maxPosV != null && maxPosV > 0 && maxPosV <= 100
     var saved by remember { mutableStateOf(false) }
 
     Scaffold(
@@ -62,9 +64,20 @@ fun SettingsScreen(container: AppContainer, onBack: () -> Unit) {
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                     modifier = Modifier.fillMaxWidth(),
                 )
+                Spacer(Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = maxPos,
+                    onValueChange = { v -> maxPos = v.filter { it.isDigit() || it == '.' }.take(5); saved = false },
+                    label = { Text("Max position size (% of capital)") },
+                    singleLine = true,
+                    isError = maxPosV != null && (maxPosV <= 0 || maxPosV > 100),
+                    supportingText = { Text("Caps how much one stock can take, even when the stop-loss is tight. Allowed range: up to 100%.") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                    modifier = Modifier.fillMaxWidth(),
+                )
                 if (valid) {
                     Text(
-                        "If a stop-loss is hit you lose at most ${Fmt.price(capitalV!! * riskV!! / 100)} on that trade. Suggested quantities are calculated from this.",
+                        "If a stop-loss is hit you lose at most ${Fmt.price(capitalV!! * riskV!! / 100)} on that trade, and no position uses more than ${Fmt.price(capitalV * maxPosV!! / 100)}. Suggested quantities are calculated from this.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -97,7 +110,7 @@ fun SettingsScreen(container: AppContainer, onBack: () -> Unit) {
             }
             Button(
                 onClick = {
-                    container.settings.update(current.copy(capital = capitalV!!, riskPercent = riskV!!, indiaOnlySearch = indiaOnly, demoMode = demo))
+                    container.settings.update(current.copy(capital = capitalV!!, riskPercent = riskV!!, maxPositionPercent = maxPosV!!, indiaOnlySearch = indiaOnly, demoMode = demo))
                     saved = true
                 },
                 enabled = valid,

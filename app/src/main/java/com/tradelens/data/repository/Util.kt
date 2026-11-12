@@ -26,3 +26,16 @@ fun Throwable.friendlyMessage(): String = when (this) {
     is IOException -> "No internet connection, or the data server didn't respond."
     else -> message ?: "Something went wrong."
 }
+
+/**
+ * Live quote polling cadence: every [intervalMs] while the market is open (or in demo mode), once a minute otherwise.
+ * Runs [poll] forever; call it from a lifecycle-aware effect so it stops when the screen isn't visible.
+ */
+suspend fun MarketRepository.pollWhileOpen(intervalMs: Long = if (source.realtime) 3_000L else 10_000L, poll: suspend () -> Unit) {
+    while (true) {
+        val open = calendar.sessionState(System.currentTimeMillis()) == com.tradelens.marketdata.SessionState.OPEN ||
+            source.mode == com.tradelens.marketdata.DataMode.DEMO
+        kotlinx.coroutines.delay(if (open) intervalMs else 60_000L)
+        if (open) runCatchingCancellable { poll() }
+    }
+}

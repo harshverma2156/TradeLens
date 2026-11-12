@@ -107,4 +107,8 @@ class AppContainer(context: Context) {
     val technicalCache = com.tradelens.ta.TechnicalCache()
     /** Memoised chart-pattern reports, keyed like the indicator cache. */
     val patternCache = com.tradelens.patterns.PatternCache()
+    /** Keeps published entry/exit recommendations from flickering on tiny price moves (Phase 5). */
+    val signalStabilizer = com.tradelens.trade.SignalStabilizer()
+    /** Delivery, order book and reported institutional data. Yahoo has none, so this reports them as unavailable. */
+    val flowSource: com.tradelens.flow.FlowDataSource = com.tradelens.flow.UnavailableFlowSource
 }

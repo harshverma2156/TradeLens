@@ -8,6 +8,7 @@ import kotlinx.coroutines.flow.asStateFlow
 data class UserSettings(
     val capital: Double = 100_000.0,     // trading capital used for position sizing
     val riskPercent: Double = 1.0,       // % of capital you're willing to lose per trade
+    val maxPositionPercent: Double = 20.0, // most of the capital one position may use (exposure cap)
     val indiaOnlySearch: Boolean = true,
     /** Synthetic prices for offline demos. Always shown with a DEMO badge; never real market data. */
     val demoMode: Boolean = false,
@@ -21,6 +22,7 @@ class SettingsRepository(context: Context) {
     private fun load() = UserSettings(
         capital = prefs.getString("capital", null)?.toDoubleOrNull() ?: 100_000.0,
         riskPercent = prefs.getString("risk", null)?.toDoubleOrNull() ?: 1.0,
+        maxPositionPercent = prefs.getString("max_position", null)?.toDoubleOrNull() ?: 20.0,
         indiaOnlySearch = prefs.getBoolean("india_only", true),
         demoMode = prefs.getBoolean("demo_mode", false),
     )
@@ -29,6 +31,7 @@ class SettingsRepository(context: Context) {
         prefs.edit()
             .putString("capital", s.capital.toString())
             .putString("risk", s.riskPercent.toString())
+            .putString("max_position", s.maxPositionPercent.toString())
             .putBoolean("india_only", s.indiaOnlySearch)
             .putBoolean("demo_mode", s.demoMode)
             .apply()

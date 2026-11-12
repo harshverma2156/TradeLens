@@ -20,6 +20,8 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
+import androidx.lifecycle.repeatOnLifecycle
+import com.tradelens.data.repository.pollWhileOpen
 import com.tradelens.AppContainer
 import com.tradelens.data.model.Quote
 import com.tradelens.data.model.Universe
@@ -56,16 +58,25 @@ class MarketsViewModel(private val market: MarketRepository) : ViewModel() {
     fun refresh() {
         viewModelScope.launch {
             _state.update { it.copy(loading = true, error = null) }
-            // Three batched requests (provider batch size permitting) instead of one call per symbol.
-            val indices = market.quotes(Universe.INDICES.keys)
-            val sectors = market.quotes(Universe.SECTORS.keys - Universe.INDICES.keys)
-            val stocks = market.quotes(Universe.POPULAR)
-            _state.update {
-                it.copy(
-                    loading = false, indices = indices, sectors = sectors, stocks = stocks,
-                    error = if (indices.isEmpty() && stocks.isEmpty()) "Couldn't load prices. Check your connection and tap refresh." else null,
-                )
-            }
+            fetch(force = false)
+        }
+    }
+
+    /** Live prices while the screen is visible: one quiet batched refresh per poll, no spinner. */
+    suspend fun live() = market.pollWhileOpen { fetch(force = true) }
+
+    private suspend fun fetch(force: Boolean) {
+        // Three batched requests (provider batch size permitting) instead of one call per symbol.
+        val indices = market.quotes(Universe.INDICES.keys, force)
+        val sectors = market.quotes(Universe.SECTORS.keys - Universe.INDICES.keys, force)
+        val stocks = market.quotes(Universe.POPULAR, force)
+        _state.update {
+            // A failed live poll keeps the prices already on screen.
+            if (force && indices.isEmpty() && stocks.isEmpty()) it
+            else it.copy(
+                loading = false, indices = indices.ifEmpty { it.indices }, sectors = sectors.ifEmpty { it.sectors }, stocks = stocks.ifEmpty { it.stocks },
+                error = if (indices.isEmpty() && stocks.isEmpty() && it.stocks.isEmpty()) "Couldn't load prices. Check your connection and tap refresh." else null,
+            )
         }
     }
 
@@ -77,6 +88,8 @@ class MarketsViewModel(private val market: MarketRepository) : ViewModel() {
 fun MarketsScreen(container: AppContainer, onOpenStock: (String) -> Unit, onSearch: () -> Unit, onSettings: () -> Unit) {
     val vm = rememberVm { MarketsViewModel(container.market) }
     val state by vm.state.collectAsStateWithLifecycle()
+    val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    LaunchedEffect(vm, lifecycle) { lifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.STARTED) { vm.live() } }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,

@@ -77,6 +77,7 @@ data/repository  MarketRepository, UserRepository, SettingsRepository
 marketdata       Timeframes, NSE/BSE calendar, candle validation, resampling, rate limiting
 ta               Technical analysis engine: indicator services, interpretation, family voting, cache
 patterns         Chart and candlestick pattern recognition (walk-forward, no look-ahead)
+trade            Smart entry/exit engine: levels and zones, three strategies, exits, sizing, signal stability
 analysis         Rating engine (AnalysisEngine); Ta facade over the ta services
 work             AlertWorker + scheduler
 ui               Compose theme, chart, screens and ViewModels

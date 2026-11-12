@@ -9,6 +9,7 @@
 | [05-market-data.md](05-market-data.md) | Phase 2: data flow, timeframes/sessions, validation, freshness, performance, provider evaluation, backend contract, limitations |
 | [06-technical-analysis.md](06-technical-analysis.md) | Phase 3: calculation services, formulas and variants, interpretation and family voting, look-ahead, caching, validation, screen |
 | [07-chart-patterns.md](07-chart-patterns.md) | Phase 4: swing/zigzag detection, pattern rules, lifecycle, no look-ahead guarantee, confidence, validation on real NSE history |
+| [08-smart-entry-exit.md](08-smart-entry-exit.md) | Phase 5: levels and zones, three entry strategies, exits, risk and sizing, statuses and gates, signal stability |
 
 ## Changes made in Phase 1 (safe, behaviour-preserving)
 - `MarketDataProvider` interface + `YahooFinanceProvider`; `MarketRepository` now depends on the interface. Its public API is unchanged.
@@ -39,3 +40,10 @@
 - Each pattern reports name, direction, timeframe, detection date, confidence (with breakdown), key levels, breakout status, volume confirmation, higher-timeframe trend, entry, stop-loss, three targets and invalidation level. Lifecycle: forming, confirmed, failed or invalidated, with a timestamped event log.
 - Patterns are drawn on the Technical screen's candlestick chart; tapping one shows its swing points, breakout, stop and targets.
 - 71 tests, including a prefix-equality test proving no future bar is used, and six real NSE examples verified by hand. Real history is fetched by `tools/pattern-history/fetch_history.py` (git-ignored). 200 unit tests in total. See 07-chart-patterns.md.
+
+## Changes made in Phase 5 (smart entry, exit and price targets)
+- `trade/`: `SmartEntryEngine` combines Phase 2 data status, Phase 3 indicators and Phase 4 patterns into aggressive, conservative and breakout plans. Stops come from structure (0.75–3.5 ATR), targets from resistance, pattern measured moves and Fibonacci extensions (never fixed percentages), with trailing stop, partial exits, invalidation and exit conditions.
+- Statuses: BUY NOW, WAIT FOR CORRECTION / BREAKOUT / CONFIRMATION, HOLD, PARTIAL PROFIT BOOKING, EXIT, AVOID. No buy signal on stale data, missing candles, event risk, failed patterns, a bearish picture, poor reward/risk or no logical stop.
+- `SignalStabilizer`: cooldown, hysteresis and level tolerance; risk-reducing changes apply at once.
+- Stock detail: the Smart entry & exit card replaces the old best-entry and trade-plan sections; there is a separate long-term card, a new "max position size" setting, and live quotes (polled every 5 s while the market is open and the page is visible; Markets and Watchlist every 10 s).
+- 42 tests; 242 unit tests in total. See 08-smart-entry-exit.md.

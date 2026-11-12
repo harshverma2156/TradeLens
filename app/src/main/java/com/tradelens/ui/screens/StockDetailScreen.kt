@@ -28,6 +28,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
+import androidx.lifecycle.repeatOnLifecycle
 import com.tradelens.AppContainer
 import com.tradelens.analysis.*
 import com.tradelens.data.model.Candle
@@ -37,6 +38,13 @@ import com.tradelens.marketdata.CorporateActionType
 import com.tradelens.marketdata.DataStatus
 import com.tradelens.marketdata.Resampler
 import com.tradelens.marketdata.Timeframe
+import com.tradelens.marketdata.DataMode
+import com.tradelens.marketdata.Freshness
+import com.tradelens.marketdata.SessionState
+import com.tradelens.patterns.PatternCache
+import com.tradelens.ta.TechnicalCache
+import com.tradelens.trade.*
+import kotlinx.coroutines.delay
 import com.tradelens.data.model.Quote
 import com.tradelens.data.repository.*
 import com.tradelens.ui.components.*
@@ -56,7 +64,18 @@ class StockDetailViewModel(
     private val market: MarketRepository,
     private val user: UserRepository,
     private val settings: SettingsRepository,
+    private val technicalCache: TechnicalCache,
+    private val patternCache: PatternCache,
+    private val stabilizer: SignalStabilizer,
+    private val flowSource: com.tradelens.flow.FlowDataSource,
 ) : ViewModel() {
+
+    companion object {
+        /** Live quote polling interval while the market is open (a real-time provider is polled faster). */
+        fun livePollMs(realtime: Boolean) = if (realtime) 2_000L else 5_000L
+        /** How often the daily bars behind the indicators are refreshed during the session. */
+        const val SERIES_REFRESH_MS = 5 * 60_000L
+    }
 
     data class State(
         val loading: Boolean = true,
@@ -78,6 +97,16 @@ class StockDetailViewModel(
         val candleMode: Boolean = true,
         val showLevels: Boolean = true,
         val message: String? = null,
+        /** Phase 5: smart entry/exit recommendation (null for indices or too little data). */
+        val trade: Recommendation? = null,
+        /** Paper-portfolio holding of this stock, which switches the engine to HOLD / PARTIAL / EXIT advice. */
+        val holding: Position? = null,
+        /** Direction of the last live price change: +1 up, −1 down, 0 unchanged (drives the price flash). */
+        val tick: Int = 0,
+        /** Wall-clock time of the last live quote. */
+        val liveAt: Long? = null,
+        /** Phase 6: volume analytics and institutional-data status (each item unavailable when its source lacks it). */
+        val flow: com.tradelens.flow.FlowReport? = null,
     )
 
     private val _state = MutableStateFlow(State())
@@ -87,8 +116,65 @@ class StockDetailViewModel(
 
     init {
         load()
-        // Re-size the trade plan when capital or risk % changes.
-        viewModelScope.launch { settings.settings.drop(1).collect { reanalyze() } }
+        // Re-size the trade plan when capital, risk % or max position changes (sizing isn't subject to signal stability).
+        viewModelScope.launch { settings.settings.drop(1).collect { stabilizer.reset(symbol); reanalyze() } }
+        // Holding this stock (paper portfolio) turns entry advice into HOLD / PARTIAL PROFIT BOOKING / EXIT advice.
+        viewModelScope.launch {
+            user.holdings.map { l -> l.firstOrNull { it.symbol == symbol }?.let { Position(it.quantity, it.avgPrice) } }
+                .distinctUntilChanged().collect { h -> _state.update { it.copy(holding = h) }; evaluateTrade() }
+        }
+    }
+
+    private var lastSeriesRefresh = System.currentTimeMillis()
+
+    /**
+     * Live prices while the screen is visible (call from a lifecycle-aware effect; it suspends forever).
+     * During the session the quote is re-fetched every [livePollMs]; each change updates the price and re-runs the
+     * entry/exit engine on the new price (cheap: indicator and pattern reports are cached by closed bars, and the
+     * stabilizer stops tiny moves from flipping the recommendation). The daily bars refresh every 5 minutes.
+     * Outside market hours it only checks once a minute.
+     */
+    suspend fun liveQuotes() {
+        while (true) {
+            val now = System.currentTimeMillis()
+            val open = market.calendar.sessionState(now) == SessionState.OPEN || market.source.mode == DataMode.DEMO
+            if (open && _state.value.quote != null) {
+                runCatchingCancellable { market.quote(symbol, forceRefresh = true) }.onSuccess(::onLiveQuote)
+                if (now - lastSeriesRefresh >= SERIES_REFRESH_MS) { lastSeriesRefresh = now; load() }
+            }
+            delay(if (open) livePollMs(market.source.realtime) else 60_000L)
+        }
+    }
+
+    private fun onLiveQuote(q: Quote) {
+        val old = _state.value.quote
+        val changed = old == null || q.price != old.price || q.asOf != old.asOf
+        _state.update { it.copy(quote = q, liveAt = System.currentTimeMillis(), tick = if (old == null) 0 else q.price.compareTo(old.price).coerceIn(-1, 1)) }
+        if (changed) evaluateTrade()
+    }
+
+    private var tradeJob: Job? = null
+
+    /** Phase 5 engine on the latest closed daily bars + live price, through the signal stabilizer. */
+    private fun evaluateTrade() {
+        val s = _state.value
+        val q = s.quote ?: return
+        if (q.isIndex || s.daily.size < 30) { _state.update { it.copy(trade = null) }; return }
+        val cfg = settings.settings.value
+        tradeJob?.cancel()
+        tradeJob = viewModelScope.launch {
+            val rec = withContext(Dispatchers.Default) {
+                val now = System.currentTimeMillis()
+                val tech = technicalCache.get(market.source.id, symbol, Timeframe.D1, s.daily, now, q.isIndex)
+                val pat = patternCache.get(market.source.id, symbol, Timeframe.D1, s.daily, now)
+                // The worse of the price's and the daily series' freshness gates new signals.
+                val status = listOfNotNull(q.status, s.dataStatus).firstOrNull { it.freshness == Freshness.STALE || it.freshness == Freshness.OFFLINE } ?: s.dataStatus
+                val r = SmartEntryEngine.evaluate(symbol, tech, pat, q.price, status, s.actions, s.holding,
+                    RiskSettings(cfg.capital, cfg.riskPercent, cfg.maxPositionPercent), now)
+                stabilizer.publish(r, now)
+            }
+            _state.update { it.copy(trade = rec) }
+        }
     }
 
     val source get() = market.source
@@ -127,8 +213,17 @@ class StockDetailViewModel(
                 AnalysisEngine.analyze(s.daily, q.price, q.high52, q.low52, cfg.capital, cfg.riskPercent, q.isIndex, s.benchmark)
             }
             _state.update { it.copy(analysis = a, analyzing = false) }
+            evaluateTrade()
+        }
+        flowJob?.cancel()
+        flowJob = viewModelScope.launch {
+            val f = com.tradelens.flow.FlowService.report(symbol, s.daily, flowSource, market.source.name,
+                s.dataStatus?.freshness ?: com.tradelens.marketdata.Freshness.MARKET_CLOSED, s.dataStatus?.fetchedAt, System.currentTimeMillis())
+            _state.update { it.copy(flow = f) }
         }
     }
+
+    private var flowJob: Job? = null
 
     fun setRange(range: ChartRange) {
         val cur = _state.value.interval
@@ -194,7 +289,12 @@ class StockDetailViewModel(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun StockDetailScreen(container: AppContainer, symbol: String, onBack: () -> Unit, onOpenTechnical: (String) -> Unit = {}) {
-    val vm = rememberVm(key = symbol) { StockDetailViewModel(symbol, container.market, container.user, container.settings) }
+    val vm = rememberVm(key = symbol) {
+        StockDetailViewModel(symbol, container.market, container.user, container.settings, container.technicalCache, container.patternCache, container.signalStabilizer, container.flowSource)
+    }
+    // Live prices only while this screen is visible: polling stops in the background and resumes on return.
+    val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    LaunchedEffect(vm, lifecycle) { lifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.STARTED) { vm.liveQuotes() } }
     val state by vm.state.collectAsStateWithLifecycle()
     val watched by vm.watched.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
@@ -251,7 +351,7 @@ fun StockDetailScreen(container: AppContainer, symbol: String, onBack: () -> Uni
             state.loading -> Loading(Modifier.padding(padding))
             state.error != null || q == null -> CenterMessage(state.error ?: "No data.", Modifier.padding(padding), "Try again", vm::load)
             else -> LazyColumn(Modifier.padding(padding), contentPadding = PaddingValues(bottom = 24.dp)) {
-                item { PriceHeader(q, onRetry = { vm.load(force = true) }) }
+                item { PriceHeader(q, state.tick, state.liveAt, onRetry = { vm.load(force = true) }) }
                 item { ChartSection(state, vm) }
                 item {
                     FilledTonalButton(onClick = { onOpenTechnical(symbol) }, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
@@ -259,6 +359,12 @@ fun StockDetailScreen(container: AppContainer, symbol: String, onBack: () -> Uni
                     }
                 }
                 item { KeyStats(q, state.analysis) }
+                state.flow?.let { f -> item { FlowSection(f, state.daily, q) } }
+                // Phase 5: smart entry / exit plan, then the long-term view kept deliberately separate from it.
+                state.trade?.let { t ->
+                    item { SmartEntrySection(t, q) }
+                    item { LongTermSection(t.longTerm) }
+                }
                 val a = state.analysis
                 if (a == null && state.analyzing) {
                     item {
@@ -277,8 +383,6 @@ fun StockDetailScreen(container: AppContainer, symbol: String, onBack: () -> Uni
                     }
                 } else {
                     item { VerdictSection(a) }
-                    item { BestEntrySection(a, q) }
-                    item { TradePlanSection(a, q) }
                     a.backtest?.let { bt -> item { BacktestSection(bt) } }
                     item { FactorsSection(a) }
                     item { LevelsSection(a, q) }
@@ -311,7 +415,7 @@ fun StockDetailScreen(container: AppContainer, symbol: String, onBack: () -> Uni
             QuantityDialog(
                 title = if (side == "BUY") "Buy ${Fmt.ticker(symbol)}" else "Sell ${Fmt.ticker(symbol)}",
                 priceText = Fmt.price(q.price, q.currency),
-                initialQty = state.analysis?.plan?.quantity?.takeIf { it > 0 } ?: 1,
+                initialQty = state.trade?.primaryPlan?.risk?.quantity?.takeIf { it > 0 } ?: 1,
                 confirmLabel = if (side == "BUY") "Buy" else "Sell",
                 onConfirm = { qty -> if (side == "BUY") vm.buy(qty) else vm.sell(qty); tradeSide = null },
                 onDismiss = { tradeSide = null },
@@ -321,7 +425,7 @@ fun StockDetailScreen(container: AppContainer, symbol: String, onBack: () -> Uni
     if (showAlertDialog && q != null) {
         PriceAlertDialog(
             quote = q,
-            suggested = state.analysis?.plan?.targets?.firstOrNull()?.price ?: q.price,
+            suggested = state.trade?.primaryPlan?.exit?.targets?.firstOrNull()?.price ?: q.price,
             onConfirm = { price, above -> vm.addAlert(price, above); showAlertDialog = false },
             onDismiss = { showAlertDialog = false },
         )
@@ -329,11 +433,23 @@ fun StockDetailScreen(container: AppContainer, symbol: String, onBack: () -> Uni
 }
 
 @Composable
-private fun PriceHeader(q: Quote, onRetry: () -> Unit) {
+private fun PriceHeader(q: Quote, tick: Int, liveAt: Long?, onRetry: () -> Unit) {
+    val mc = LocalMarketColors.current
+    val base = MaterialTheme.colorScheme.onSurface
+    // Flash green/red on each live price change, then fade back.
+    var flash by remember { mutableIntStateOf(0) }
+    LaunchedEffect(liveAt) { if (liveAt != null && tick != 0) { flash = tick; delay(900); flash = 0 } }
+    val color by androidx.compose.animation.animateColorAsState(when (flash) { 1 -> mc.gain; -1 -> mc.loss; else -> base }, label = "price-flash")
     Column(Modifier.padding(horizontal = 20.dp, vertical = 4.dp)) {
         Text(q.name, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Text(Fmt.price(q.price, q.currency, q.isIndex), style = MaterialTheme.typography.displaySmall.merge(Num), fontWeight = FontWeight.SemiBold)
+        Text(Fmt.price(q.price, q.currency, q.isIndex), style = MaterialTheme.typography.displaySmall.merge(Num), fontWeight = FontWeight.SemiBold, color = color)
         ChangeText(q.change, q.changePct, style = MaterialTheme.typography.titleMedium)
+        if (liveAt != null) {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 2.dp)) {
+                Box(Modifier.size(7.dp).background(mc.gain, CircleShape))
+                Text("  Auto-updating · last check ${Fmt.dateTime(liveAt).substringAfterLast(' ')}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
         // Always say how fresh the price is and where it came from; stale or demo data is never shown as live.
         DataStatusBar(q.status, Modifier.padding(top = 4.dp), onRetry = onRetry)
     }
@@ -343,11 +459,12 @@ private fun PriceHeader(q: Quote, onRetry: () -> Unit) {
 private fun ChartSection(state: StockDetailViewModel.State, vm: StockDetailViewModel) {
     val mc = LocalMarketColors.current
     val primary = MaterialTheme.colorScheme.primary
-    val plan = state.analysis?.plan
+    val plan = state.trade?.primaryPlan?.takeIf { it.exit != null }
     val levels = if (state.showLevels && plan != null) buildList {
+        val x = plan.exit!!
         add(LevelLine(plan.entry, "Entry", primary))
-        add(LevelLine(plan.stopLoss, "SL", mc.loss))
-        add(LevelLine(plan.targets[1].price, "T2", mc.gain))
+        add(LevelLine(x.stopLoss, "SL", mc.loss))
+        x.targets.take(2).forEach { add(LevelLine(it.price, it.label, mc.gain)) }
     } else emptyList()
 
     Section(
@@ -460,41 +577,6 @@ private fun PillarBar(p: PillarScore) {
 }
 
 @Composable
-private fun BestEntrySection(a: Analysis, q: Quote) {
-    val e = a.entry
-    val mc = LocalMarketColors.current
-    val cur = q.currency
-    val color = when (e.type) {
-        EntryType.BUY_NOW, EntryType.BREAKOUT -> mc.gain
-        EntryType.AVOID -> mc.loss
-        else -> mc.neutral
-    }
-    Section("Best entry", trailing = {
-        Surface(color = color.copy(alpha = 0.14f), contentColor = color, shape = CircleShape) {
-            Text(e.type.label, Modifier.padding(horizontal = 12.dp, vertical = 4.dp), style = MaterialTheme.typography.labelLarge)
-        }
-    }) {
-        Text(e.headline, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, color = color)
-        Spacer(Modifier.height(6.dp))
-        KeyValue(if (e.type == EntryType.AVOID) "Level to watch" else "Best entry price", Fmt.price(e.price, cur), emphasize = true)
-        KeyValue("Entry zone", "${Fmt.price(e.zoneLow, cur)} – ${Fmt.price(e.zoneHigh, cur)}")
-        KeyValue("vs current price", Fmt.pct((e.price - q.price) / q.price * 100))
-        Spacer(Modifier.height(6.dp))
-        Text(e.detail, style = MaterialTheme.typography.bodySmall)
-        e.trigger?.let {
-            Spacer(Modifier.height(6.dp))
-            Text(it, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Medium)
-        }
-        if (e.confluence.isNotEmpty()) {
-            HorizontalDivider(Modifier.padding(vertical = 8.dp), color = MaterialTheme.colorScheme.outline.copy(alpha = 0.4f))
-            Text("Why this zone: ${e.confluence.size} level${if (e.confluence.size > 1) "s" else ""} line up here",
-                style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            e.confluence.forEach { KeyValue(it.name, Fmt.price(it.price, cur)) }
-        }
-    }
-}
-
-@Composable
 private fun BacktestSection(bt: Backtest) {
     val mc = LocalMarketColors.current
     fun p(v: Double) = String.format(Locale.US, "%.0f%%", v * 100)
@@ -517,48 +599,6 @@ private fun BacktestSection(bt: Backtest) {
         Text("Each Buy signal was entered at the next day's open with a 1.5 ATR stop and a 3 ATR target (max 30 days). " +
             "The random-entry win rate uses the same exits on every day, so the gap shows whether the rating adds an edge on this stock. " +
             "No costs or slippage; past results don't guarantee future ones.",
-            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-    }
-}
-
-@Composable
-private fun TradePlanSection(a: Analysis, q: Quote) {
-    val p = a.plan
-    val mc = LocalMarketColors.current
-    val cur = q.currency
-    val isLong = p.direction == Direction.LONG
-    Section(if (isLong) "Trade plan: buy setup" else "Trade plan: short setup") {
-        if (a.signal == Signal.HOLD) {
-            Text("Rating is Hold. Use this plan only after the trigger in Best entry is met.",
-                style = MaterialTheme.typography.bodySmall, color = mc.neutral, modifier = Modifier.padding(bottom = 6.dp))
-        }
-        KeyValue(if (isLong) "Buy zone" else "Sell zone", "${Fmt.price(p.entryLow, cur)} – ${Fmt.price(p.entryHigh, cur)}")
-        KeyValue("Suggested entry", Fmt.price(p.entry, cur), emphasize = true)
-        KeyValue("Stop-loss", "${Fmt.price(p.stopLoss, cur)}  (${Fmt.pct(p.stopPct)})", mc.loss, emphasize = true)
-        p.targets.forEach { t -> KeyValue(t.label, "${Fmt.price(t.price, cur)}  (${Fmt.pct(t.pct)})", mc.gain) }
-        HorizontalDivider(Modifier.padding(vertical = 8.dp), color = MaterialTheme.colorScheme.outline.copy(alpha = 0.4f))
-        KeyValue("Risk per share", Fmt.price(p.riskPerShare, cur))
-        KeyValue("Reward : risk at Target 2", "${String.format(Locale.US, "%.1f", p.rewardRiskT2)} : 1")
-        val lvl = p.nearestLevel
-        val rr = p.rewardRiskToLevel
-        if (lvl != null && rr != null) {
-            KeyValue(if (isLong) "Reward : risk to resistance" else "Reward : risk to support",
-                "${String.format(Locale.US, "%.1f", rr)} : 1  (${Fmt.num(lvl)})")
-        } else {
-            KeyValue(if (isLong) "Overhead resistance" else "Support below", if (isLong) "None, at fresh highs" else "None, at fresh lows")
-        }
-        HorizontalDivider(Modifier.padding(vertical = 8.dp), color = MaterialTheme.colorScheme.outline.copy(alpha = 0.4f))
-        KeyValue("Suggested quantity", "${p.quantity} shares", emphasize = true)
-        KeyValue("Capital needed", Fmt.price(p.capitalRequired, cur))
-        KeyValue("Max loss if stop-loss hits", Fmt.price(p.maxLoss, cur), mc.loss)
-        KeyValue("Profit at Target 2", Fmt.price(p.profitAtT2, cur), mc.gain)
-        KeyValue("Holding period", p.holding)
-        Spacer(Modifier.height(8.dp))
-        Text(p.trailing, style = MaterialTheme.typography.bodySmall)
-        Spacer(Modifier.height(4.dp))
-        Text(p.invalidation, style = MaterialTheme.typography.bodySmall, color = mc.loss)
-        Spacer(Modifier.height(4.dp))
-        Text("Quantity is sized so a stop-loss hit costs your chosen risk % of capital. Change it in Settings.",
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }

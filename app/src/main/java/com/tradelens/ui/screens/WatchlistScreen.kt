@@ -15,6 +15,8 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
+import androidx.lifecycle.repeatOnLifecycle
+import com.tradelens.data.repository.pollWhileOpen
 import com.tradelens.AppContainer
 import com.tradelens.data.local.WatchlistEntity
 import com.tradelens.data.model.Quote
@@ -47,6 +49,12 @@ class WatchlistViewModel(private val user: UserRepository, private val market: M
         }
     }
 
+    /** Live prices while the screen is visible: one quiet batched refresh per poll. */
+    suspend fun live() = market.pollWhileOpen {
+        val symbols = items.value.orEmpty().map { it.symbol }
+        if (symbols.isNotEmpty()) { val loaded = market.quotes(symbols, forceRefresh = true); _quotes.update { old -> old + loaded.associateBy { it.symbol } } }
+    }
+
     fun remove(symbol: String) = viewModelScope.launch { user.removeWatch(symbol) }
 }
 
@@ -57,6 +65,8 @@ fun WatchlistScreen(container: AppContainer, onOpenStock: (String) -> Unit, onSe
     val items by vm.items.collectAsStateWithLifecycle()
     val quotes by vm.quotes.collectAsStateWithLifecycle()
     val refreshing by vm.refreshing.collectAsStateWithLifecycle()
+    val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    LaunchedEffect(vm, lifecycle) { lifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.STARTED) { vm.live() } }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
