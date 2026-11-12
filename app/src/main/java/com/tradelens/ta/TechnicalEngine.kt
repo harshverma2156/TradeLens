@@ -198,7 +198,8 @@ object TechnicalEngine {
                 if (up == true) Bias.BULLISH else Bias.BEARISH, (40 + min(abs(px - (v ?: px)) / atr, 3.0) * 20).toInt(),
                 "Trend is ${if (up == true) "up; the line at ${f(v)} is a trailing stop below price" else "down; price must close above ${f(v)} to flip it"}${if (flipped) ". It flipped within the last 5 bars." else "."}",
                 "Basic bands = (H+L)/2 ± k·ATR(n). The final upper band only steps down (unless the prior close broke above it); the final lower band only steps up. " +
-                    "The trend flips when the close crosses the opposite final band. ATR uses Wilder smoothing.",
+                    "The trend flips when the close crosses the opposite final band. ATR uses Wilder smoothing. " +
+                    "Variant: TradingView tests the flip against the previous bar's band, so its flips can come one bar later.",
                 "ATR n = 10, k = 3", 11, ready = v != null && up != null)
         }
 

@@ -20,7 +20,13 @@ import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.draw.clipToBounds
 import com.tradelens.data.model.Candle
+import com.tradelens.patterns.DetectedPattern
+import com.tradelens.patterns.PatternKind
+import com.tradelens.patterns.PatternStatus
+import com.tradelens.patterns.SegmentRole
+import com.tradelens.ta.Bias
 import com.tradelens.ta.Overlays
 import com.tradelens.ui.theme.LocalMarketColors
 import com.tradelens.ui.theme.Num
@@ -45,6 +51,7 @@ enum class Overlay(val label: String, val color: Color) {
     FIB("Fibonacci", Color(0xFFC9A227)),
     PROFILE("POC / Value area", Color(0xFFAF7AC5)),
     SR("Support / resistance", Color(0xFF138A55)),
+    PATTERNS("Chart patterns", Color(0xFF6C5CE7)),
 }
 
 private data class Line(val values: List<Double?>, val color: Color, val width: Dp = 1.5.dp, val dashed: Boolean = false)
@@ -53,9 +60,16 @@ private data class HLevel(val price: Double, val label: String, val color: Color
 /**
  * Candles with indicator overlays. [candles] = closed bars (+ the forming bar, if any, last); overlay series are
  * aligned to closed bars, so the forming bar simply has no overlay values. Shows the last [visible] bars.
+ *
+ * [patterns] (bar indices into the same closed bars) are drawn when [Overlay.PATTERNS] is on. A [highlight]ed pattern
+ * is drawn alone with its labelled swing points and its breakout, stop and target levels, and the window moves to
+ * show the whole pattern even if it is older than the last [visible] bars.
  */
 @Composable
-fun TechnicalPriceChart(candles: List<Candle>, overlays: Overlays, enabled: Set<Overlay>, visible: Int = 120, modifier: Modifier = Modifier) {
+fun TechnicalPriceChart(
+    candles: List<Candle>, overlays: Overlays, enabled: Set<Overlay>, visible: Int = 120, modifier: Modifier = Modifier,
+    patterns: List<DetectedPattern> = emptyList(), highlight: DetectedPattern? = null,
+) {
     if (candles.size < 2) {
         Box(modifier.fillMaxWidth().height(300.dp)) { Text("Not enough bars to chart", color = MaterialTheme.colorScheme.onSurfaceVariant) }
         return
@@ -65,10 +79,14 @@ fun TechnicalPriceChart(candles: List<Candle>, overlays: Overlays, enabled: Set<
     val grid = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)
     val measurer = rememberTextMeasurer()
     val label = MaterialTheme.typography.labelSmall
-    val start = max(0, candles.size - visible)
-    val win = candles.subList(start, candles.size)
-    var selected by remember(candles) { mutableStateOf<Int?>(null) }
-    fun slice(v: List<Double?>) = (start until candles.size).map { v.getOrNull(it) }
+    val end = highlight?.let { h -> min(candles.size, maxOf(h.endIndex, h.confirmedIndex ?: 0, h.events.last().index) + 25) } ?: candles.size
+    val shown = max(visible, highlight?.let { end - it.startIndex + 10 } ?: 0)
+    val start = max(0, end - shown)
+    val win = candles.subList(start, end)
+    var selected by remember(candles, start, end) { mutableStateOf<Int?>(null) }
+    fun slice(v: List<Double?>) = (start until end).map { v.getOrNull(it) }
+    val showPatterns = Overlay.PATTERNS in enabled || highlight != null
+    val drawn = if (highlight != null) listOf(highlight) else if (showPatterns) patterns else emptyList()
 
     val lines = buildList {
         if (Overlay.EMA20 in enabled) add(Line(slice(overlays.ema[20].orEmpty()), Overlay.EMA20.color))
@@ -95,14 +113,20 @@ fun TechnicalPriceChart(candles: List<Candle>, overlays: Overlays, enabled: Set<
             add(HLevel(p.poc, "POC", Overlay.PROFILE.color)); add(HLevel(p.valueAreaHigh, "VAH", Overlay.PROFILE.color.copy(alpha = 0.7f))); add(HLevel(p.valueAreaLow, "VAL", Overlay.PROFILE.color.copy(alpha = 0.7f)))
         }
         if (Overlay.SR in enabled) { overlays.supports.forEach { add(HLevel(it, "S", mc.gain)) }; overlays.resistances.forEach { add(HLevel(it, "R", mc.loss)) } }
+        highlight?.let { h ->
+            add(HLevel(h.breakoutLevel, "Breakout", Overlay.PATTERNS.color))
+            add(HLevel(h.stopLoss, "Stop", mc.loss.takeIf { h.bullish } ?: mc.gain))
+            h.targets.forEach { add(HLevel(it.price, it.label.substringBefore(' '), mc.gain.takeIf { h.bullish } ?: mc.loss)) }
+        }
     }
-    val st = if (Overlay.SUPERTREND in enabled) slice(overlays.supertrend.line) to (start until candles.size).map { overlays.supertrend.up.getOrNull(it) } else null
-    val sar = if (Overlay.PSAR in enabled) slice(overlays.psar.value) to (start until candles.size).map { overlays.psar.up.getOrNull(it) } else null
+    val st = if (Overlay.SUPERTREND in enabled) slice(overlays.supertrend.line) to (start until end).map { overlays.supertrend.up.getOrNull(it) } else null
+    val sar = if (Overlay.PSAR in enabled) slice(overlays.psar.value) to (start until end).map { overlays.psar.up.getOrNull(it) } else null
     val cloud = if (Overlay.ICHIMOKU in enabled) slice(overlays.cloudA) to slice(overlays.cloudB) else null
 
     // Price range from candles, widened for overlays but never by more than 30% (keeps candles readable).
     val lo0 = win.minOf { it.low }; val hi0 = win.maxOf { it.high }; val span0 = (hi0 - lo0).coerceAtLeast(hi0 * 1e-6)
-    val extra = (lines.flatMap { it.values } + levels.map { it.price } + (st?.first.orEmpty()) + (sar?.first.orEmpty()) + (cloud?.first.orEmpty()) + (cloud?.second.orEmpty()))
+    val patternPrices = drawn.flatMap { p -> p.segments.flatMap { listOf(it.from, it.to) }.filter { it.index in start until end }.map { it.price } }
+    val extra = (lines.flatMap { it.values } + levels.map { it.price } + (st?.first.orEmpty()) + (sar?.first.orEmpty()) + (cloud?.first.orEmpty()) + (cloud?.second.orEmpty()) + patternPrices)
         .filterNotNull().filter { it in (lo0 - span0 * 0.3)..(hi0 + span0 * 0.3) }
     val lo = min(lo0, extra.minOrNull() ?: lo0); val hi = max(hi0, extra.maxOrNull() ?: hi0)
     val pad = (hi - lo) * 0.04
@@ -116,7 +140,7 @@ fun TechnicalPriceChart(candles: List<Candle>, overlays: Overlays, enabled: Set<
             style = label.merge(Num), color = muted, modifier = Modifier.padding(bottom = 4.dp),
         )
         Canvas(
-            Modifier.fillMaxWidth().height(300.dp)
+            Modifier.fillMaxWidth().height(300.dp).clipToBounds()
                 .pointerInput(win) { detectTapGestures { p -> selected = ((p.x / size.width) * win.size).toInt().coerceIn(0, win.lastIndex) } }
                 .pointerInput(win) {
                     fun at(x: Float) = ((x / size.width) * win.size).toInt().coerceIn(0, win.lastIndex)
@@ -155,6 +179,35 @@ fun TechnicalPriceChart(candles: List<Candle>, overlays: Overlays, enabled: Set<
                 drawLine(col, Offset(x(i), y(k.high)), Offset(x(i), y(k.low)), max(1f, step * 0.12f))
                 val top = y(max(k.open, k.close)); val bot = y(min(k.open, k.close))
                 drawRect(col, Offset(x(i) - bodyW / 2, top), Size(bodyW, max(1f, bot - top)))
+            }
+            // Patterns: solid once confirmed, dashed while forming, grey when failed or invalidated.
+            drawn.forEach { p ->
+                val dead = p.status == PatternStatus.FAILED || p.status == PatternStatus.INVALIDATED
+                val col = when { dead -> muted.copy(alpha = 0.55f); p.direction == Bias.BULLISH -> mc.gain; p.direction == Bias.BEARISH -> mc.loss; else -> Overlay.PATTERNS.color }
+                val dash = if (p.status == PatternStatus.CONFIRMED) null else PathEffect.dashPathEffect(floatArrayOf(9f, 6f))
+                fun px(i: Int) = x(i - start)
+                p.segments.forEach { s ->
+                    if (s.to.index < start || s.from.index >= end) return@forEach
+                    val w = if (s.role == SegmentRole.OUTLINE) 1.5.dp.toPx() else 2.dp.toPx()
+                    drawLine(col, Offset(px(s.from.index), y(s.from.price)), Offset(px(s.to.index), y(s.to.price)), w, pathEffect = dash)
+                }
+                if (p.type.kind == PatternKind.CANDLESTICK && p.endIndex in start until end) {
+                    val k = candles[p.endIndex]; val cx = px(p.endIndex); val sz = 5.dp.toPx()
+                    val tri = if (p.bullish) Path().apply { val ty = y(k.low) + 4.dp.toPx(); moveTo(cx, ty); lineTo(cx - sz, ty + sz * 1.6f); lineTo(cx + sz, ty + sz * 1.6f); close() }
+                    else Path().apply { val ty = y(k.high) - 4.dp.toPx(); moveTo(cx, ty); lineTo(cx - sz, ty - sz * 1.6f); lineTo(cx + sz, ty - sz * 1.6f); close() }
+                    drawPath(tri, col)
+                }
+                if (p === highlight) {
+                    p.anchors.filter { it.index in start until end }.forEach { a ->
+                        drawCircle(col, 3.dp.toPx(), Offset(px(a.index), y(a.price)))
+                        if (a.label.isNotBlank() && p.type.kind != PatternKind.CANDLESTICK) {
+                            val t = measurer.measure(a.label, label.copy(color = col))
+                            val above = a.price >= (candles[a.index].high + candles[a.index].low) / 2
+                            drawText(t, topLeft = Offset((px(a.index) - t.size.width / 2).coerceIn(0f, size.width - t.size.width), if (above) y(a.price) - t.size.height - 4f else y(a.price) + 4f))
+                        }
+                    }
+                    p.confirmedIndex?.takeIf { it in start until end }?.let { drawCircle(col, 5.dp.toPx(), Offset(px(it), y(candles[it].close)), style = Stroke(2.dp.toPx())) }
+                }
             }
             levels.filter { it.price in yLo..yHi }.forEach { l ->
                 val ly = y(l.price)

@@ -15,6 +15,7 @@ reward-to-risk, position size and holding period.
 |---|---|
 | Markets | NIFTY 50, SENSEX, BANK NIFTY, NIFTY IT; popular stocks with Top gainers / Top losers sorting |
 | Search | Search NSE/BSE by name or ticker (debounced) |
+| Technical analysis | Per-timeframe engine with 30+ indicators, chart overlays, oscillator panel and a Buy/Sell/Neutral summary that needs several independent indicator families to agree; chart and candlestick patterns drawn on the chart with breakout, stop and targets |
 | Stock detail | Candle/line chart (1D–5Y) with crosshair and entry/SL/target lines; key stats; verdict and score; trade plan; indicator breakdown; support/resistance; warnings; paper Buy/Sell; price alert |
 | Watchlist | Starred stocks with live prices |
 | Scanner | Runs the analysis on all Nifty 50 stocks (or your watchlist) and ranks buy and sell setups |
@@ -73,7 +74,10 @@ All thresholds are plain constants in that file. The backtest is in-sample and h
 data/remote      MarketDataProvider interface; YahooFinanceProvider (Retrofit + kotlinx.serialization)
 data/local       Room DB: watchlist, paper holdings, trades, alerts
 data/repository  MarketRepository, UserRepository, SettingsRepository
-analysis         Indicators (EMA, RSI, MACD, ATR, Bollinger, ADX, S/R) and AnalysisEngine
+marketdata       Timeframes, NSE/BSE calendar, candle validation, resampling, rate limiting
+ta               Technical analysis engine: indicator services, interpretation, family voting, cache
+patterns         Chart and candlestick pattern recognition (walk-forward, no look-ahead)
+analysis         Rating engine (AnalysisEngine); Ta facade over the ta services
 work             AlertWorker + scheduler
 ui               Compose theme, chart, screens and ViewModels
 ```
@@ -92,5 +96,4 @@ Engineering docs (audit, target architecture, data models, roadmap) are in [docs
 
 ## Next steps worth adding
 Out-of-sample backtesting across the whole universe; fundamentals (P/E, ROE, debt) from a data provider;
-news and results calendar; unit tests for `Ta` and
-`AnalysisEngine`; Hilt for DI; a proper adaptive launcher icon.
+news and results calendar; Hilt for DI; a proper adaptive launcher icon.

@@ -3,3 +3,6 @@ build/
 local.properties
 .idea/
 *.iml
+
+# Real market history for pattern tests (Yahoo terms unclear on redistribution): fetch with tools/pattern-history/fetch_history.py
+app/src/test/resources/patterns/history/

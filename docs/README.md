@@ -7,6 +7,8 @@
 | [03-data-models.md](03-data-models.md) | Reusable domain models and how they map to today's types |
 | [04-development-plan.md](04-development-plan.md) | DB schema, API plan, licensing, dependencies, security, testing, roadmap |
 | [05-market-data.md](05-market-data.md) | Phase 2: data flow, timeframes/sessions, validation, freshness, performance, provider evaluation, backend contract, limitations |
+| [06-technical-analysis.md](06-technical-analysis.md) | Phase 3: calculation services, formulas and variants, interpretation and family voting, look-ahead, caching, validation, screen |
+| [07-chart-patterns.md](07-chart-patterns.md) | Phase 4: swing/zigzag detection, pattern rules, lifecycle, no look-ahead guarantee, confidence, validation on real NSE history |
 
 ## Changes made in Phase 1 (safe, behaviour-preserving)
 - `MarketDataProvider` interface + `YahooFinanceProvider`; `MarketRepository` now depends on the interface. Its public API is unchanged.
@@ -24,3 +26,16 @@
 - `MarketRepository`: incremental sync, caching, offline fallback, batching, validation on write and read, `DataStatus` for every result. `MarketSyncWorker` refreshes hourly in the background.
 - UI: freshness badge, as-of time, provider, staleness explanation, errors with Retry, range + interval chips (1m–1M), a Data source & quality card, sector indices, a demo banner and a demo toggle in Settings.
 - 67 unit tests, including a Robolectric migration test. See 05-market-data.md §10.
+
+## Changes made in Phase 3 (technical analysis engine)
+- `ta/`: pure-Kotlin calculation services (`Rolling`, `TrendCalc`, `MomentumCalc`, `VolatilityCalc`, `VolumeCalc`, `LevelsCalc`) covering 30+ indicators, plus `TechnicalEngine` (interpretation and summary) and `TechnicalCache`. `analysis/Ta` now delegates to them.
+- Each reading reports value, timeframe, bias, strength, explanation, formula, warm-up, bar used and calculation time. Correlated indicators vote once per family; Buy/Sell needs 3+ agreeing families.
+- Only closed bars feed signals; the forming bar is charted but excluded. Each timeframe is analysed from its own bars.
+- New Technical analysis screen: timeframe chips, summary, candlestick chart with 16 overlays, oscillator panel, filterable indicator cards with expandable maths.
+- 62 indicator tests: cross-checked against the `ta` library, hand-calculated fixtures, and look-ahead, flat, gap, missing-candle and extreme-value cases. 129 unit tests in total. See 06-technical-analysis.md §5.
+
+## Changes made in Phase 4 (chart pattern recognition)
+- `patterns/`: deterministic engine that walks forward one closed bar at a time. 16 chart patterns (H&S and inverse, double/triple tops and bottoms, flags, triangles, cup and handle, rectangle, wedges, channels) and 9 candlestick patterns.
+- Each pattern reports name, direction, timeframe, detection date, confidence (with breakdown), key levels, breakout status, volume confirmation, higher-timeframe trend, entry, stop-loss, three targets and invalidation level. Lifecycle: forming, confirmed, failed or invalidated, with a timestamped event log.
+- Patterns are drawn on the Technical screen's candlestick chart; tapping one shows its swing points, breakout, stop and targets.
+- 71 tests, including a prefix-equality test proving no future bar is used, and six real NSE examples verified by hand. Real history is fetched by `tools/pattern-history/fetch_history.py` (git-ignored). 200 unit tests in total. See 07-chart-patterns.md.

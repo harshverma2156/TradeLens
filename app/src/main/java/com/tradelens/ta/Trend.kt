@@ -58,6 +58,8 @@ object TrendCalc {
      * Supertrend (Olivier Seban). basic bands = (H + L)/2 ± k × ATR(n).
      * Final upper band only moves down (or resets when the prior close broke above it); final lower band only
      * moves up. Trend flips when the close crosses the opposite final band. Defaults 10, 3.
+     * Variant: TradingView's built-in compares the close with the PREVIOUS bar's final band when testing for a flip,
+     * so a flip can register one bar later. Initial direction (first bar with an ATR) = close ≥ (H + L)/2.
      */
     fun supertrend(c: List<Candle>, n: Int = 10, k: Double = 3.0): Supertrend {
         val atr = VolatilityCalc.atr(c, n)

@@ -89,7 +89,7 @@ These are not legal advice. Confirm the current terms with each party before a p
 
 | Layer | Tests | Tooling | Status |
 |---|---|---|---|
-| Indicators | Known-value tests against published reference series (RSI, MACD, ATR, ADX, Supertrend) | JUnit | Partial: RSI and Supertrend direction |
+| Indicators | Cross-check against the `ta` reference library, hand-calculated fixtures, look-ahead and edge-case tests | JUnit | Done: 62 tests (see 06-technical-analysis.md §5) |
 | Engine | Synthetic trend, chop and reversal series; guardrails; plan invariants (stop below entry, qty × risk ≤ budget) | JUnit | 10 tests |
 | Repository / providers | Fake provider (done) plus recorded-JSON fixtures through MockWebServer (no live network in CI) | JUnit, MockWebServer | 9 tests |
 | Database | DAO tests; **migration test for every version bump** | Room testing, Robolectric or instrumented | To do (P2), prerequisite for any schema change |

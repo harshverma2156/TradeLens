@@ -108,7 +108,15 @@ class ReferenceImplementationTest {
         check("Senkou A (raw)", ich.spanA, "span_a"); check("Senkou B (raw)", ich.spanB, "span_b")
     }
 
-    @Test fun psarMatchesReference() = check("PSAR", TrendCalc.psar(candles).value, "psar", from = 2)
+    @Test fun dmiMatchesExactly() {
+        // ta emits 0.0 placeholders (not NaN) during warm-up: +DI/−DI before bar n + 1, ADX before bar 2n − 1.
+        // Ours are null there. Wilder's running-sum smoothing (ta) and the RMA (ours) give identical DI ratios.
+        val d = TrendCalc.dmi(candles, 14)
+        check("+DI", d.plusDi, "plus_di", from = 15); check("−DI", d.minusDi, "minus_di", from = 15)
+        check("ADX", d.adx, "adx", from = 27)
+    }
+
+    @Test fun psarMatchesReference()= check("PSAR", TrendCalc.psar(candles).value, "psar", from = 2)
 
     @Test fun mfiMatchesExactly() = check("MFI", VolumeCalc.mfi(candles), "mfi", from = 1550)
 

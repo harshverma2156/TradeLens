@@ -133,6 +133,19 @@ class IndicatorFixturesTest {
         assertNull(ich.spanB[50]); assertNotNull(ich.spanB[51])
     }
 
+    @Test fun supertrendByHand() {
+        // n = 2, k = 1. TR: 2, 2, 2, 4, 2, 3.5 → ATR (Wilder, seed (2+2)/2 at i1): 2, 2, 3, 2.5, 3.
+        // i1: hl2 10 → bands 12 / 8; close 10 ≥ hl2 → up, line 8.
+        // i2: hl2 11 → basic 13 / 9; upper keeps 12 (13 > 12); lower ratchets up to 9. Close 11 ≥ 9 → up, line 9.
+        // i3: hl2 9, ATR 3 → basic 12 / 6; upper 12; lower keeps 9 (6 < 9). Close 7.5 < 9 → flips DOWN, line = upper 12.
+        // i4: hl2 7 → basic 9.5 / 4.5; upper steps down to 9.5; lower resets to 4.5 (prior close 7.5 < 9). Close 6.5 ≤ 9.5 → down, 9.5.
+        // i5: hl2 8.5, ATR 3 → basic 11.5 / 5.5; upper keeps 9.5; lower 5.5. Close 9.8 > 9.5 → flips UP, line = lower 5.5.
+        val c = listOf(bar(10.0, 8.0, 9.0), bar(11.0, 9.0, 10.0), bar(12.0, 10.0, 11.0), bar(11.0, 7.0, 7.5), bar(8.0, 6.0, 6.5), bar(10.0, 7.0, 9.8))
+        val st = TrendCalc.supertrend(c, 2, 1.0)
+        assertEquals(listOf(null, 8.0, 9.0, 12.0, 9.5, 5.5), st.line)
+        assertEquals(listOf(null, true, true, false, false, true), st.up)
+    }
+
     @Test fun supertrendFollowsDirection() {
         val up = (0 until 40).map { k -> bar(k + 2.0, k.toDouble(), k + 1.5) }
         assertEquals(true, TrendCalc.supertrend(up).up.last())
@@ -171,6 +184,16 @@ class IndicatorFixturesTest {
         assertTrue(p.poc in 100.0..101.0)
         assertTrue(p.valueAreaHigh < 110.0)
         assertNull(VolumeCalc.volumeProfile(List(5) { bar(5.0, 5.0, 5.0) }))                // no range
+    }
+
+    @Test fun valueAreaByHand() {
+        // Range 0–5 in 5 bins of 1. Each bar sits inside one bin: volumes 10, 20, 50, 15, 5 (total 100).
+        // POC = bin 2 → 2.5. Value area starts at 50; neighbours 20 (below) vs 15 (above) → add below → 70 = 70% → stop.
+        // VAL = bottom of bin 1 = 1.0, VAH = top of bin 2 = 3.0. (Adding the smaller side first would give VAH 4.)
+        val c = listOf(bar(0.5, 0.0, 0.25, 10), bar(1.8, 1.2, 1.5, 20), bar(2.8, 2.2, 2.5, 50), bar(3.8, 3.2, 3.5, 15), bar(5.0, 4.5, 4.75, 5))
+        val p = VolumeCalc.volumeProfile(c, bins = 5)!!
+        assertEquals(2.5, p.poc, e); assertEquals(1.0, p.valueAreaLow, e); assertEquals(3.0, p.valueAreaHigh, e)
+        assertArrayEquals(doubleArrayOf(10.0, 20.0, 50.0, 15.0, 5.0), p.volumes, e)
     }
 
     // ---------------- levels
