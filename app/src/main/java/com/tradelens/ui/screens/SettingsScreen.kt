@@ -25,12 +25,15 @@ fun SettingsScreen(container: AppContainer, onBack: () -> Unit) {
     var capital by remember { mutableStateOf(current.capital.toLong().toString()) }
     var risk by remember { mutableStateOf(current.riskPercent.toString()) }
     var maxPos by remember { mutableStateOf(current.maxPositionPercent.toString()) }
+    var marginSafety by remember { mutableStateOf(current.marginOfSafetyPercent.toString()) }
     var indiaOnly by remember { mutableStateOf(current.indiaOnlySearch) }
     var demo by remember { mutableStateOf(current.demoMode) }
     val capitalV = capital.toDoubleOrNull()
     val riskV = risk.toDoubleOrNull()
     val maxPosV = maxPos.toDoubleOrNull()
-    val valid = capitalV != null && capitalV > 0 && riskV != null && riskV > 0 && riskV <= 10 && maxPosV != null && maxPosV > 0 && maxPosV <= 100
+    val marginV = marginSafety.toDoubleOrNull()
+    val valid = capitalV != null && capitalV > 0 && riskV != null && riskV > 0 && riskV <= 10 && maxPosV != null && maxPosV > 0 && maxPosV <= 100 &&
+        marginV != null && marginV >= 0 && marginV <= 60
     var saved by remember { mutableStateOf(false) }
 
     Scaffold(
@@ -75,6 +78,17 @@ fun SettingsScreen(container: AppContainer, onBack: () -> Unit) {
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                     modifier = Modifier.fillMaxWidth(),
                 )
+                Spacer(Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = marginSafety,
+                    onValueChange = { v -> marginSafety = v.filter { it.isDigit() || it == '.' }.take(4); saved = false },
+                    label = { Text("Margin of safety (% below fair value)") },
+                    singleLine = true,
+                    isError = marginV != null && (marginV < 0 || marginV > 60),
+                    supportingText = { Text("The discount you want before buying. Valuation zones and the buy-below price use it. Allowed range: 0–60%.") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                    modifier = Modifier.fillMaxWidth(),
+                )
                 if (valid) {
                     Text(
                         "If a stop-loss is hit you lose at most ${Fmt.price(capitalV!! * riskV!! / 100)} on that trade, and no position uses more than ${Fmt.price(capitalV * maxPosV!! / 100)}. Suggested quantities are calculated from this.",
@@ -110,7 +124,7 @@ fun SettingsScreen(container: AppContainer, onBack: () -> Unit) {
             }
             Button(
                 onClick = {
-                    container.settings.update(current.copy(capital = capitalV!!, riskPercent = riskV!!, maxPositionPercent = maxPosV!!, indiaOnlySearch = indiaOnly, demoMode = demo))
+                    container.settings.update(current.copy(capital = capitalV!!, riskPercent = riskV!!, maxPositionPercent = maxPosV!!, indiaOnlySearch = indiaOnly, marginOfSafetyPercent = marginV!!, demoMode = demo))
                     saved = true
                 },
                 enabled = valid,

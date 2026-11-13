@@ -51,6 +51,7 @@ import com.tradelens.ui.components.*
 import com.tradelens.ui.theme.LocalMarketColors
 import com.tradelens.ui.theme.Num
 import kotlinx.coroutines.flow.*
+import com.tradelens.recommend.toRecord
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
@@ -68,6 +69,10 @@ class StockDetailViewModel(
     private val patternCache: PatternCache,
     private val stabilizer: SignalStabilizer,
     private val flowSource: com.tradelens.flow.FlowDataSource,
+    private val fundamentalSource: com.tradelens.fundamentals.FundamentalDataSource,
+    private val newsSource: com.tradelens.research.NewsSource,
+    private val exchangeSource: com.tradelens.research.ExchangeAnnouncementSource,
+    private val recommendations: com.tradelens.recommend.RecommendationHistory,
 ) : ViewModel() {
 
     companion object {
@@ -107,6 +112,18 @@ class StockDetailViewModel(
         val liveAt: Long? = null,
         /** Phase 6: volume analytics and institutional-data status (each item unavailable when its source lacks it). */
         val flow: com.tradelens.flow.FlowReport? = null,
+        /** Phase 7: fundamentals (statements, ratios, governance, quality score), or the reason it is unavailable. */
+        val fundamentals: com.tradelens.fundamentals.FundamentalReport? = null,
+        /** Phase 8: fair value, DCF, zones and interpretation, or the reason none is available. */
+        val valuation: com.tradelens.valuation.ValuationOutcome? = null,
+        /** Phase 9: news, announcements and the research report. Refreshed on demand. */
+        val research: com.tradelens.research.ResearchReport? = null,
+        val researchLoading: Boolean = false,
+        /** Phase 10: one decision per horizon, the horizon the user is viewing, and the saved history for this stock. */
+        val decisions: List<com.tradelens.recommend.HorizonDecision>? = null,
+        val horizon: com.tradelens.recommend.InvestmentHorizon = com.tradelens.recommend.InvestmentHorizon.SHORT,
+        val savedNote: String? = null,
+        val history: List<com.tradelens.recommend.RecommendationRecord> = emptyList(),
     )
 
     private val _state = MutableStateFlow(State())
@@ -174,6 +191,7 @@ class StockDetailViewModel(
                 stabilizer.publish(r, now)
             }
             _state.update { it.copy(trade = rec) }
+            decide()
         }
     }
 
@@ -221,9 +239,84 @@ class StockDetailViewModel(
                 s.dataStatus?.freshness ?: com.tradelens.marketdata.Freshness.MARKET_CLOSED, s.dataStatus?.fetchedAt, System.currentTimeMillis())
             _state.update { it.copy(flow = f) }
         }
+        fundamentalJob?.cancel()
+        fundamentalJob = viewModelScope.launch {
+            val f = com.tradelens.fundamentals.FundamentalService.report(symbol, fundamentalSource, q.price,
+                s.dataStatus?.freshness ?: com.tradelens.marketdata.Freshness.MARKET_CLOSED, s.dataStatus?.fetchedAt, System.currentTimeMillis())
+            // Valuation runs on the same price and closed daily bars; the margin of safety comes from settings.
+            val vcfg = com.tradelens.valuation.ValuationConfig(marginOfSafety = (cfg.marginOfSafetyPercent / 100).coerceIn(0.0, 0.6))
+            val v = com.tradelens.valuation.ValuationService.report(symbol, fundamentalSource, q.price, s.daily, vcfg,
+                System.currentTimeMillis(), f.analysis?.quality?.score)
+            _state.update { it.copy(fundamentals = f, valuation = v) }
+            refreshResearch()
+        }
     }
 
     private var flowJob: Job? = null
+    private var fundamentalJob: Job? = null
+    private var researchJob: Job? = null
+    private var decisionJob: Job? = null
+
+    /**
+     * Phase 10: combines every engine's latest output into one decision per horizon. Missing engines stay unavailable.
+     * Runs after the trade plan and the research are updated, and again whenever either changes.
+     */
+    fun decide() {
+        val s = _state.value
+        val q = s.quote ?: return
+        decisionJob?.cancel()
+        decisionJob = viewModelScope.launch {
+            val now = System.currentTimeMillis()
+            val (tech, pat, bench) = withContext(Dispatchers.Default) {
+                Triple(
+                    if (s.daily.size >= 30) technicalCache.get(market.source.id, symbol, Timeframe.D1, s.daily, now, q.isIndex) else null,
+                    if (s.daily.size >= 30) patternCache.get(market.source.id, symbol, Timeframe.D1, s.daily, now) else null,
+                    s.benchmark?.takeIf { it.size >= 30 }?.let { technicalCache.get(market.source.id, "^NSEI", Timeframe.D1, it, now, true) },
+                )
+            }
+            val inputs = com.tradelens.recommend.DecisionInputs(
+                symbol = symbol, price = q.price, now = now, technical = tech, benchmark = bench, patterns = pat,
+                trade = s.trade, flow = s.flow, fundamentals = s.fundamentals, valuation = s.valuation?.report, research = s.research,
+                holding = s.holding != null, inputAsOf = s.trade?.dataAsOf ?: s.daily.lastOrNull()?.time,
+            )
+            // No calibration table is shipped yet, so confidence is reported as uncalibrated.
+            val decisions = com.tradelens.recommend.DecisionEngine.decideAll(inputs, com.tradelens.recommend.ModelConfig.DEFAULT, calibration = null)
+            _state.update { it.copy(decisions = decisions, history = recommendations.forSymbol(symbol)) }
+        }
+    }
+
+    fun setHorizon(h: com.tradelens.recommend.InvestmentHorizon) = _state.update { it.copy(horizon = h, savedNote = null) }
+
+    /** Saves the current decision for the viewed horizon. Saved records are never overwritten. */
+    fun saveDecision() {
+        val s = _state.value
+        val d = s.decisions?.firstOrNull { it.horizon == s.horizon } ?: return
+        val rec = d.toRecord(symbol, s.quote?.price)
+        val saved = recommendations.append(rec)
+        _state.update { it.copy(savedNote = if (saved) "Saved to history with model ${rec.modelVersion}." else "This exact recommendation is already saved.",
+            history = recommendations.forSymbol(symbol)) }
+    }
+
+    fun loadHistory() = _state.update { it.copy(history = recommendations.forSymbol(symbol)) }
+
+    /**
+     * Fetches the latest company news and builds the research report from it, the fundamentals and the valuation.
+     * Called on each page load and from the Refresh button. Only retrieved items and computed figures are used.
+     */
+    fun refreshResearch() {
+        val s = _state.value
+        val name = s.quote?.name ?: symbol
+        researchJob?.cancel()
+        _state.update { it.copy(researchLoading = true) }
+        researchJob = viewModelScope.launch {
+            val news = newsSource.search(name)
+            val exchange = exchangeSource.announcements(symbol)
+            val report = com.tradelens.research.ResearchService.build(symbol, name, news, exchange,
+                s.fundamentals, _state.value.valuation?.report, System.currentTimeMillis())
+            _state.update { it.copy(research = report, researchLoading = false) }
+            decide()
+        }
+    }
 
     fun setRange(range: ChartRange) {
         val cur = _state.value.interval
@@ -290,7 +383,7 @@ class StockDetailViewModel(
 @Composable
 fun StockDetailScreen(container: AppContainer, symbol: String, onBack: () -> Unit, onOpenTechnical: (String) -> Unit = {}) {
     val vm = rememberVm(key = symbol) {
-        StockDetailViewModel(symbol, container.market, container.user, container.settings, container.technicalCache, container.patternCache, container.signalStabilizer, container.flowSource)
+        StockDetailViewModel(symbol, container.market, container.user, container.settings, container.technicalCache, container.patternCache, container.signalStabilizer, container.flowSource, container.fundamentalSource, container.newsSource, container.exchangeSource, container.recommendations)
     }
     // Live prices only while this screen is visible: polling stops in the background and resumes on return.
     val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current
@@ -352,6 +445,8 @@ fun StockDetailScreen(container: AppContainer, symbol: String, onBack: () -> Uni
             state.error != null || q == null -> CenterMessage(state.error ?: "No data.", Modifier.padding(padding), "Try again", vm::load)
             else -> LazyColumn(Modifier.padding(padding), contentPadding = PaddingValues(bottom = 24.dp)) {
                 item { PriceHeader(q, state.tick, state.liveAt, onRetry = { vm.load(force = true) }) }
+                // Phase 10: the combined decision sits directly under the price, one view per horizon.
+                item { DecisionDashboard(state.decisions, state.horizon, state.savedNote, state.history, vm::setHorizon, vm::saveDecision) }
                 item { ChartSection(state, vm) }
                 item {
                     FilledTonalButton(onClick = { onOpenTechnical(symbol) }, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
@@ -360,6 +455,9 @@ fun StockDetailScreen(container: AppContainer, symbol: String, onBack: () -> Uni
                 }
                 item { KeyStats(q, state.analysis) }
                 state.flow?.let { f -> item { FlowSection(f, state.daily, q) } }
+                state.fundamentals?.let { f -> item { FundamentalSection(f) } }
+                state.valuation?.let { v -> item { ValuationSection(v) } }
+                item { ResearchSection(state.research, state.researchLoading, vm::refreshResearch) }
                 // Phase 5: smart entry / exit plan, then the long-term view kept deliberately separate from it.
                 state.trade?.let { t ->
                     item { SmartEntrySection(t, q) }

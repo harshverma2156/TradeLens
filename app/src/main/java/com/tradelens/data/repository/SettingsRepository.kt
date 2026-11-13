@@ -10,6 +10,8 @@ data class UserSettings(
     val riskPercent: Double = 1.0,       // % of capital you're willing to lose per trade
     val maxPositionPercent: Double = 20.0, // most of the capital one position may use (exposure cap)
     val indiaOnlySearch: Boolean = true,
+    /** Phase 8: buy only this far below fair value (25 = 25%). Drives the accumulation zones. */
+    val marginOfSafetyPercent: Double = 25.0,
     /** Synthetic prices for offline demos. Always shown with a DEMO badge; never real market data. */
     val demoMode: Boolean = false,
 )
@@ -24,6 +26,7 @@ class SettingsRepository(context: Context) {
         riskPercent = prefs.getString("risk", null)?.toDoubleOrNull() ?: 1.0,
         maxPositionPercent = prefs.getString("max_position", null)?.toDoubleOrNull() ?: 20.0,
         indiaOnlySearch = prefs.getBoolean("india_only", true),
+        marginOfSafetyPercent = prefs.getString("margin_of_safety", null)?.toDoubleOrNull() ?: 25.0,
         demoMode = prefs.getBoolean("demo_mode", false),
     )
 
@@ -33,6 +36,7 @@ class SettingsRepository(context: Context) {
             .putString("risk", s.riskPercent.toString())
             .putString("max_position", s.maxPositionPercent.toString())
             .putBoolean("india_only", s.indiaOnlySearch)
+            .putString("margin_of_safety", s.marginOfSafetyPercent.toString())
             .putBoolean("demo_mode", s.demoMode)
             .apply()
         _settings.value = s

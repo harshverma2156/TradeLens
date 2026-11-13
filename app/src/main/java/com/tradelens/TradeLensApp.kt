@@ -111,4 +111,11 @@ class AppContainer(context: Context) {
     val signalStabilizer = com.tradelens.trade.SignalStabilizer()
     /** Delivery, order book and reported institutional data. Yahoo has none, so this reports them as unavailable. */
     val flowSource: com.tradelens.flow.FlowDataSource = com.tradelens.flow.UnavailableFlowSource
+    /** Financial statements, ratios, filings and shareholding (Phase 7). Unavailable until a licensed results feed is connected. */
+    val fundamentalSource: com.tradelens.fundamentals.FundamentalDataSource = com.tradelens.fundamentals.UnavailableFundamentalSource
+    /** Company news from a public search feed (Phase 9). Exchange announcements are not connected: see UnavailableExchangeSource. */
+    val newsSource: com.tradelens.research.NewsSource = com.tradelens.research.GoogleNewsRss(http)
+    val exchangeSource: com.tradelens.research.ExchangeAnnouncementSource = com.tradelens.research.UnavailableExchangeSource
+    /** Saved AI decisions (Phase 10). Append-only: a saved recommendation is never rewritten. */
+    val recommendations = com.tradelens.recommend.RecommendationHistory(java.io.File(context.filesDir, "recommendations.jsonl"))
 }
